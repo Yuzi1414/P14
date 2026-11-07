@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8,<10
+psutil>=6,<8
+xlwt==1.3.0
+

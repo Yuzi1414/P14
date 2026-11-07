@@ -1,0 +1,153 @@
+{
+  "at": "2026-10-16T16:26:17+08:00",
+  "task": "合成样例全流程验证",
+  "records": 45,
+  "groups": 17,
+  "source_counts": {
+    "bank": 16,
+    "fees": 15,
+    "ledger": 14
+  },
+  "statuses": {
+    "已匹配": 5,
+    "异常差异": 2,
+    "未匹配": 10
+  },
+  "manual_relation_count": 2,
+  "review_event_count": 2,
+  "ai_calls": [
+    {
+      "id": "f5d66cc9a0da4986be7b7e72f13a42b9",
+      "kind": "mapping",
+      "model": "qwen3:4b",
+      "prompt_version": "p14-local-1.1",
+      "status": "cancelled",
+      "at": "2026-10-16T16:02:32+08:00",
+      "elapsed_seconds": 23.136,
+      "suggestion": null,
+      "error": "已取消本地模型请求，规则结果保留",
+      "adoption": "待人工判断",
+      "context": {
+        "import_key": "bank_8667d482f22bcf0b55fb38bfc70b7af7e3464fd1ed929e9de9fa1bb82dfe053d_演示明细"
+      }
+    },
+    {
+      "id": "e132c699f2db4e8697c51c1d36688851",
+      "kind": "mapping",
+      "model": "qwen3:4b",
+      "prompt_version": "p14-local-1.1",
+      "status": "success",
+      "at": "2026-10-16T16:03:40+08:00",
+      "elapsed_seconds": 70.679,
+      "suggestion": {
+        "mappings": [
+          {
+            "field": "business_id",
+            "column": "业务编号",
+            "reason": "标准字段business_id对应中文描述为'业务编号'，列名与标准字段描述一致"
+          },
+          {
+            "field": "batch_id",
+            "column": "结算批次号",
+            "reason": "标准字段batch_id对应中文描述为'结算批次号'，列名与标准字段描述一致"
+          },
+          {
+            "field": "object_id",
+            "column": "对象标识",
+            "reason": "标准字段object_id对应中文描述为'对象标识'，列名与标准字段描述一致"
+          },
+          {
+            "field": "name",
+            "column": "往来对象",
+            "reason": "标准字段name对应中文描述为'往来对象'，列名与标准字段描述一致"
+          },
+          {
+            "field": "date",
+            "column": "业务日期",
+            "reason": "标准字段date对应中文描述为'业务日期'，列名与标准字段描述一致"
+          },
+          {
+            "field": "amount",
+            "column": "金额",
+            "reason": "标准字段amount对应中文描述为'金额'，列名与标准字段描述一致"
+          },
+          {
+            "field": "direction",
+            "column": "收支方向",
+            "reason": "标准字段direction对应中文描述为'收支方向'，列名与标准字段描述一致"
+          },
+          {
+            "field": "currency",
+            "column": "币种",
+            "reason": "标准字段currency对应中文描述为'币种'，列名与标准字段描述一致"
+          }
+        ],
+        "cleaning_notes": [
+          "结算批次号在样本数据中为空，需确认是否为必填字段"
+        ]
+      },
+      "error": "",
+      "adoption": "待人工判断",
+      "context": {
+        "import_key": "bank_8667d482f22bcf0b55fb38bfc70b7af7e3464fd1ed929e9de9fa1bb82dfe053d_演示明细"
+      }
+    },
+    {
+      "id": "9d9443d8830748ea90ea6b9cb2dad695",
+      "kind": "candidate",
+      "model": "qwen3:4b",
+      "prompt_version": "p14-local-1.1",
+      "status": "success",
+      "at": "2026-10-16T16:14:38+08:00",
+      "elapsed_seconds": 28.356,
+      "suggestion": {
+        "candidate_id": "47715c8ef16328e56739",
+        "reason": "候选对象名称完全匹配且日期、金额、方向一致，其他候选对象名称相同但object_id、amount、business_id不同",
+        "cleaning_notes": [
+          "其他候选对象虽然名称相同，但object_id、amount、business_id不同，不足以确认关联",
+          "同名或同金额不足以确认关联，需更多特征匹配"
+        ]
+      },
+      "error": "",
+      "adoption": "待人工判断",
+      "context": {
+        "bank_id": "242f8fee8f5acec4a48f",
+        "relation": "bank-fees"
+      }
+    },
+    {
+      "id": "23889986447c48998f7341b9628bf502",
+      "kind": "candidate",
+      "model": "qwen3:4b",
+      "prompt_version": "p14-local-1.1",
+      "status": "success",
+      "at": "2026-10-16T16:18:39+08:00",
+      "elapsed_seconds": 23.858,
+      "suggestion": {
+        "candidate_id": "47715c8ef16328e56739",
+        "reason": "候选对象名称完全匹配且日期、金额、方向一致，其他候选对象名称相同但object_id、amount、business_id不同，无法确认为同一笔交易",
+        "cleaning_notes": [
+          "同名对象存在多个，但本例中唯一匹配的候选对象在所有字段上均与银行记录一致",
+          "其他候选对象虽然名称相同，但object_id、amount、business_id不同，不足以确认关联"
+        ],
+        "verified_facts": {
+          "business_id_exact": null,
+          "object_id_exact": true,
+          "name_exact": false,
+          "date_exact": true,
+          "amount_exact": true,
+          "direction_exact": true
+        }
+      },
+      "error": "",
+      "adoption": "已采纳候选",
+      "context": {
+        "bank_id": "242f8fee8f5acec4a48f",
+        "relation": "bank-fees"
+      }
+    }
+  ],
+  "browser": "isolated Playwright Microsoft Edge session",
+  "browser_non_loopback_requests_blocked": true,
+  "note": "独立合成样例；不是财务业务验收，不包含本机任务数据库"
+}

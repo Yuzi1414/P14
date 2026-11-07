@@ -1,0 +1,11 @@
+{
+  "rows_per_source": 10000,
+  "total_records": 30000,
+  "pairs": 20000,
+  "groups": 10000,
+  "matched_groups": 10000,
+  "rule_seconds": 0.8175,
+  "rss_before_mb": 42.81,
+  "rss_after_mb": 61.21,
+  "scope": "规则引擎与覆盖检查；不含Excel读写、AI与浏览器；RSS为采样值，非峰值"
+}

@@ -1,0 +1,16 @@
+.venv/
+.runtime/
+runtime/
+restricted_data/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+artifacts/private/
+.playwright-cli/
+output/
+dist/
+
+

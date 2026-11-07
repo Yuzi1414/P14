@@ -1,0 +1,49 @@
+{
+  "at": "2026-10-16T16:07:04+08:00",
+  "model": "qwen3:4b",
+  "endpoint": "127.0.0.1:11434",
+  "client_non_loopback_blocked": true,
+  "whole_machine_disconnected": false,
+  "offline_scope": "Python客户端禁止非回环连接；真实本地模型推理、合成导入、人工关联复核、SQLite恢复、Excel导出通过；未修改整机网络",
+  "records": 45,
+  "calls": [
+    {
+      "kind": "mapping",
+      "result": {
+        "mappings": [
+          {
+            "field": "business_id",
+            "column": "缴费单号",
+            "reason": "缴费单号对应业务编号，是唯一标识业务的编号"
+          },
+          {
+            "field": "amount",
+            "column": "缴费金额",
+            "reason": "缴费金额直接对应金额字段，数值类型一致"
+          },
+          {
+            "field": "date",
+            "column": "缴费日期",
+            "reason": "缴费日期对应业务日期，格式为YYYY-MM-DD"
+          }
+        ],
+        "cleaning_notes": [
+          "学生姓名字段未在标准字段中，需人工确认是否为往来对象"
+        ]
+      },
+      "elapsed_seconds": 26.815
+    },
+    {
+      "kind": "candidate",
+      "result": {
+        "candidate_id": "47715c8ef16328e56739",
+        "reason": "候选对象名称完全匹配且日期、金额、方向一致，其他候选对象名称相同但object_id、amount、business_id不同",
+        "cleaning_notes": [
+          "其他候选对象虽然名称相同，但object_id、amount、business_id不同，不足以确认关联",
+          "同名或同金额不足以确认关联，需更多特征匹配"
+        ]
+      },
+      "elapsed_seconds": 26.774
+    }
+  ]
+}

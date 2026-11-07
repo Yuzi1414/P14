@@ -1,0 +1,257 @@
+[
+  {
+    "path": ".gitignore",
+    "bytes": 152,
+    "sha256": "40d973afbbaa134c958bb1ba5f1e570e81b9d4e1922ccb738782a8e17a639102"
+  },
+  {
+    "path": ".streamlit/config.toml",
+    "bytes": 305,
+    "sha256": "de55dffb8b17245094c6c5c7fcf2ce76ba087e003bca120b6c2778e3ad59b251"
+  },
+  {
+    "path": "app.py",
+    "bytes": 25527,
+    "sha256": "353419fa0f55886f8f23a84ecc237cd6de6cf683579738028bd8a48138a8a22a"
+  },
+  {
+    "path": "docs/ai-verification.json",
+    "bytes": 1764,
+    "sha256": "674533be9bfaa88479cbe5da993ccf36d11e3868c243791345b4d18e84322284"
+  },
+  {
+    "path": "docs/benchmark.json",
+    "bytes": 316,
+    "sha256": "124c9e44170ec4a7e9b35f2096a4359ef838307f616d248cdc7707f78aa96fca"
+  },
+  {
+    "path": "docs/BUSINESS_CONFIRMATION.md",
+    "bytes": 1660,
+    "sha256": "acb1a08031651aad530f0c2a294ba99f211b2f592408f92b059a3b1d8102c528"
+  },
+  {
+    "path": "docs/BUSINESS_RULES.md",
+    "bytes": 3646,
+    "sha256": "3927919ff9718a5d6bf186570c9cd79ee69ead63c8d01e815b26a7b5926e1cde"
+  },
+  {
+    "path": "docs/DATA_POLICY.md",
+    "bytes": 1930,
+    "sha256": "8344c4e10a9f14468af144a979aac9c6177494cff61d7fe8d8911eedd7affe32"
+  },
+  {
+    "path": "docs/DEMO.md",
+    "bytes": 2150,
+    "sha256": "ff727fc1d7aef947e738c5f1f4a8c29e61c59859059e1c0044467128b82fb234"
+  },
+  {
+    "path": "docs/PRD.md",
+    "bytes": 3455,
+    "sha256": "4eb7d363b147a94fc34115c72edc9efceefb52b4da3524b544d0bfc12afe5dcb"
+  },
+  {
+    "path": "docs/TEST_REPORT.md",
+    "bytes": 4654,
+    "sha256": "47d40c0552192b51107953c1c6a635f072c3017cb30b6070eb5753f2e48e7f15"
+  },
+  {
+    "path": "docs/ui-verification.json",
+    "bytes": 5607,
+    "sha256": "53322268eee0e1e33a0b1be210f3609d46669973a3d6b8dc2bcf1b6333584c06"
+  },
+  {
+    "path": "docs/USER_GUIDE.md",
+    "bytes": 2611,
+    "sha256": "005bd65ca8f314ea1df4ea0ec8e61a0bfc41a0eec22d818281ffa622db0de87c"
+  },
+  {
+    "path": "output/playwright/ai-candidate.png",
+    "bytes": 110077,
+    "sha256": "35380f976e365c24fc5775e0dbc10aaa0e069ebd4bb69c15888356215228bab1"
+  },
+  {
+    "path": "output/playwright/import.png",
+    "bytes": 109402,
+    "sha256": "08a2f7e48f065376b7546873ca1dcbc01799218ee7643406e38be644e03284d1"
+  },
+  {
+    "path": "output/playwright/overview.png",
+    "bytes": 124394,
+    "sha256": "a61835ecb392ecf39167168ab82b8e630ab4da3797a3780e58e9c5e3c326de16"
+  },
+  {
+    "path": "output/playwright/review.png",
+    "bytes": 120627,
+    "sha256": "e8e33b7dbe755cce79155f8587c7119220e94f87242f422619a6a175d301cb8c"
+  },
+  {
+    "path": "output/合成演示-核对与复核.xlsx",
+    "bytes": 27749,
+    "sha256": "41f3cc911a8ac9a36a448b56cbdc3761a47a6081de9180f2797962294a1e8726"
+  },
+  {
+    "path": "output/浏览器导出-核对结果.xlsx",
+    "bytes": 28715,
+    "sha256": "3b4cb855586974bcd56d6db41e475bd4d904271d65152eae25e780c6a7e451de"
+  },
+  {
+    "path": "pytest.ini",
+    "bytes": 42,
+    "sha256": "6c6ccf864e8f2d2e0223ee8e39bfde660c12435aa37d81e2b14000a6bee15003"
+  },
+  {
+    "path": "README.md",
+    "bytes": 3306,
+    "sha256": "3140293ca8557b0a1be6d1774d6d99a9e064bfb5f15d446d2541219b0014922a"
+  },
+  {
+    "path": "reconcile/__init__.py",
+    "bytes": 78,
+    "sha256": "c2582926f01ed5800a55bada8a3b6b5b7cdf256f46b57a92967995681621ef99"
+  },
+  {
+    "path": "reconcile/ai.py",
+    "bytes": 8351,
+    "sha256": "deef6f77291bc84361ec76d8d82ad6087e606e48c37ab64c92181843ef43bd32"
+  },
+  {
+    "path": "reconcile/demo.py",
+    "bytes": 902,
+    "sha256": "81e0885a1b9074750201207d68da7295a209eeb476ad7544321206cd79bd72ee"
+  },
+  {
+    "path": "reconcile/engine.py",
+    "bytes": 7769,
+    "sha256": "89d2073d6ac86c05cd1e6156e854a21fd674f8058018b12503e9725814012cfa"
+  },
+  {
+    "path": "reconcile/exporter.py",
+    "bytes": 5381,
+    "sha256": "409a99fd55cc797936f323217a7ffa4c856d3fca09f397b2fb3501e8615dedda"
+  },
+  {
+    "path": "reconcile/importer.py",
+    "bytes": 10960,
+    "sha256": "c504d7c1f9e08d695834d8c84e53d26bbc79a3352a6c05a1abd826c0b4da8399"
+  },
+  {
+    "path": "reconcile/models.py",
+    "bytes": 2634,
+    "sha256": "8543d8e2051521334372bd0f973966e5b1f8866e9251f557c2c74567d6783192"
+  },
+  {
+    "path": "reconcile/service.py",
+    "bytes": 3328,
+    "sha256": "075e6b55c649082afd75e4b70f25da3d0e4044e54b8aee8fd67bf967ad1f31a1"
+  },
+  {
+    "path": "reconcile/storage.py",
+    "bytes": 1699,
+    "sha256": "eaad948fc28a6f3c5bf023e3f9ff88ade00c79abedd00b865e3b280d9c466152"
+  },
+  {
+    "path": "requirements-dev.txt",
+    "bytes": 60,
+    "sha256": "158190cdaf90992b42b5f52864c4b385f28bbf5432f3bb06444afc98ab591064"
+  },
+  {
+    "path": "requirements-lock.txt",
+    "bytes": 931,
+    "sha256": "21cfce6ba7d51b4eac4e0b826bd9409f8538b94b71aee6ada0babccc7c718b75"
+  },
+  {
+    "path": "requirements.txt",
+    "bytes": 98,
+    "sha256": "6706630ab51b9354871e5e3193b77cfed69ae0780ab602c8eb3d34d9f6ec5b81"
+  },
+  {
+    "path": "samples/expected.json",
+    "bytes": 440,
+    "sha256": "73cb67569a512e09d17866388c6068fc37194b57f5996aee99e6e922c6993f0d"
+  },
+  {
+    "path": "samples/学生收费.xlsx",
+    "bytes": 6409,
+    "sha256": "a2e75e6d3fe4ca2e6145b5a908f1b076ac8c56baae18ba173d8c3523aeb384f2"
+  },
+  {
+    "path": "samples/财务往来账.xlsx",
+    "bytes": 6338,
+    "sha256": "1700e57596c2fc72a1903e8e6913b214b905d57ca3e4df8c721593dea05bb25d"
+  },
+  {
+    "path": "samples/银行流水.xlsx",
+    "bytes": 6405,
+    "sha256": "8667d482f22bcf0b55fb38bfc70b7af7e3464fd1ed929e9de9fa1bb82dfe053d"
+  },
+  {
+    "path": "scripts/benchmark.py",
+    "bytes": 1528,
+    "sha256": "21734c5a46380627236f44c6c973c96bbe5d5bd8f2872114a5007d3e723e5ff2"
+  },
+  {
+    "path": "scripts/capture_verification.py",
+    "bytes": 1726,
+    "sha256": "01b7d8cd6e2362ba900488b65e82bcbff3ea9dbdb5ebacd325e1bbac518ad92e"
+  },
+  {
+    "path": "scripts/download_model.py",
+    "bytes": 2277,
+    "sha256": "f0d59594f9790c8eb9575e6c695391e3ea30a1b5bb030db920a26a07af153797"
+  },
+  {
+    "path": "scripts/generate_samples.py",
+    "bytes": 4206,
+    "sha256": "afa2d11f57c532d59179729cf43614629db36a368f29f9eb628108737cc8ca93"
+  },
+  {
+    "path": "scripts/package.py",
+    "bytes": 2132,
+    "sha256": "f0ada0aba76bc9c6b7e937b142081afc24dbaff27af0731b579133470aa613f5"
+  },
+  {
+    "path": "scripts/setup-ai.ps1",
+    "bytes": 2900,
+    "sha256": "9a2f717f4a1500b5dbad430c3d709972ce80d757082333885c2d9cd400495afe"
+  },
+  {
+    "path": "scripts/start-ai.ps1",
+    "bytes": 1777,
+    "sha256": "3cea16db5006202edca63bc279578a1a2ef81a8988c523384d7388ee30e47f50"
+  },
+  {
+    "path": "scripts/start.ps1",
+    "bytes": 1149,
+    "sha256": "f8bceb834972088d94a366e820eb92122d6e853d11a8c06363a162c05f0f1657"
+  },
+  {
+    "path": "scripts/stop.ps1",
+    "bytes": 1582,
+    "sha256": "1069394373e743411671af201c8709006b904313fd108dfcb00adee721345cb1"
+  },
+  {
+    "path": "scripts/verify_local_ai.py",
+    "bytes": 4785,
+    "sha256": "c6ff643a3b921f148ab640f2291932ecd59bd84bb1a7209b4424ba691a0d39cb"
+  },
+  {
+    "path": "start.cmd",
+    "bytes": 112,
+    "sha256": "7b32ab106a035099ca346d3d42dfd0bf2ef737a1050084eb611453650918607a"
+  },
+  {
+    "path": "tests/test_ai.py",
+    "bytes": 3129,
+    "sha256": "59c94d08c031d993a0bc9de3f102168fef4788fe5bebe87a2d339e37e0aef254"
+  },
+  {
+    "path": "tests/test_reconciliation.py",
+    "bytes": 8565,
+    "sha256": "f851ec10d885fa0cfda9c276a8bebd52c696641cf7cae4ee031f5f16c7515c01"
+  },
+  {
+    "path": "tests/test_workbench.py",
+    "bytes": 1408,
+    "sha256": "9789df032b316b4a67bf5bea1a7ddeab95c13d3d6801ed2273037ae3abba362b"
+  }
+]
