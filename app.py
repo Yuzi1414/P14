@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import html
+import json
 import re
 import secrets
 from pathlib import Path
@@ -15,7 +16,7 @@ from reconcile.demo import load_demo
 from reconcile.engine import candidate_records
 from reconcile.exporter import group_rows, money, record_rows, workbook_bytes
 from reconcile.importer import fingerprint, normalize, read_sheet, sheet_names, suggest_mapping
-from reconcile.models import FIELDS, SOURCES
+from reconcile.models import FIELDS, SOURCES, Task
 from reconcile.service import accept_candidate, create_task, record_review
 from reconcile.storage import Store, review_status, timestamp
 
@@ -131,6 +132,24 @@ def _session_secret():
 
 _SECRET = _session_secret()
 _TOKEN_KEY = "s"
+_DEVICE_KEY = "d"
+
+
+def _device_id():
+    """本机（本浏览器入口）标识，用于把对账数据按设备隔离。
+
+    首次打开时生成 8 位十六进制标识并写回地址栏（?d=），之后刷新、切页都沿用；
+    换一台电脑或用不带 d 的地址打开会拿到新标识，看到的是空白工作台。
+    """
+    raw = st.query_params.get(_DEVICE_KEY)
+    if isinstance(raw, list):
+        raw = raw[0] if raw else ""
+    raw = (raw or "").strip()
+    if re.fullmatch(r"[0-9a-f]{8}", raw):
+        return raw
+    value = secrets.token_hex(4)
+    st.query_params[_DEVICE_KEY] = value
+    st.rerun()
 
 
 def _sign_user(user):
@@ -165,7 +184,11 @@ def _persist_login(user):
 def _clear_login():
     st.session_state.pop("user", None)
     try:
+        # 只清登录令牌，保留本机标识，否则退出再登录会换一台“新设备”，看不到本机数据
+        keep_device = st.query_params.get(_DEVICE_KEY)
         st.query_params.clear()
+        if keep_device:
+            st.query_params[_DEVICE_KEY] = keep_device
     except Exception:
         pass
 
@@ -274,12 +297,25 @@ def ai_health():
     return LocalAI().health()
 
 
-# 每个账号独立的任务库：新账号首次登录即为空白工作台，不与其它账号共享数据
+# 每个账号 + 每台设备独立的任务库：账号决定"谁能用"，设备决定"看到哪一份数据"。
+# 同一账号在另一台电脑登录会拿到新的设备标识，因此是空白工作台，不共享对账数据。
 _uname = current_user["username"]
 _slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", _uname).strip("_") or "user"
 _tag = hashlib.sha256(_uname.encode("utf-8")).hexdigest()[:8]
-task_db_path = ROOT / "runtime" / "tasks" / f"{_slug}_{_tag}.db"
+_device = _device_id()
+task_db_path = ROOT / "runtime" / "tasks" / f"{_slug}_{_tag}" / f"{_device}.db"
+# 兼容改造前的单库布局：本机第一次以新结构打开时，把原有任务库并入当前设备，避免数据凭空消失
+_legacy_db = ROOT / "runtime" / "tasks" / f"{_slug}_{_tag}.db"
+if not task_db_path.exists() and _legacy_db.exists():
+    try:
+        task_db_path.parent.mkdir(parents=True, exist_ok=True)
+        _legacy_db.replace(task_db_path)
+    except OSError:
+        pass
 store = Store(task_db_path)
+
+# 共享空间：显式发布才写入，只有本账号的其它设备可以载入；默认不参与同步
+shared_store = Store(ROOT / "runtime" / "shared" / f"{_slug}_{_tag}.db")
 if "task" not in st.session_state:
     try:
         st.session_state.task = store.load()
@@ -438,7 +474,10 @@ with st.sidebar:
                 try:
                     auth.delete_account(current_user["username"], del_pw)
                     try:
-                        task_db_path.unlink(missing_ok=True)
+                        # 注销账号时清掉该账号在所有设备上的任务库
+                        for db_file in task_db_path.parent.glob("*.db"):
+                            db_file.unlink(missing_ok=True)
+                        task_db_path.parent.rmdir()
                     except OSError:
                         pass
                     _clear_login()
@@ -448,7 +487,8 @@ with st.sidebar:
                     st.error(str(exc))
     st.divider()
     st.markdown("**运行边界**")
-    st.caption("仅本机访问 · 数据本地处理\n\n演示规则 demo-1.0 · 未经财务确认")
+    st.caption("演示规则 demo-1.0 · 未经财务确认")
+    st.caption(f"本机数据独立 · 设备标识 {_device}\n\n同一账号在其它电脑登录看不到这里的数据")
     st.markdown(f"本地 AI：<span class='ai-dot {'on' if ai_ok else 'off'}'></span>{MODEL} {'可用' if ai_ok else '尚未就绪'}", unsafe_allow_html=True)
     if task:
         st.caption(f"当前任务：{task.name}\n\n{len(task.records)} 条原始记录 / {len(task.groups)} 个结果组")
@@ -699,6 +739,57 @@ elif page == "本地 AI 与记录":
             st.json(task.reviews)
 
 else:
+    st.subheader("数据存放与共享")
+    st.caption(f"本机模式（默认）：数据只保存在当前设备（{_device}），其它电脑登录同一账号看不到；需要跨设备时用下面的显式操作。")
+    if not task:
+        st.caption("当前没有任务；可以先「从云端共享载入」，或导入对账数据后再发布。")
+    c_share, c_load = st.columns(2)
+    if c_share.button("发布到云端共享", use_container_width=True, disabled=task is None,
+                      help="把当前任务复制到本账号的共享空间，供其它设备载入"):
+        shared_store.save(task)
+        st.success(f"已发布到共享空间（{timestamp()}）。其它设备可用「从云端共享载入」获取。")
+    if c_load.button("从云端共享载入", use_container_width=True,
+                     help="用共享空间的最新任务覆盖这台电脑当前的任务"):
+        try:
+            shared_task = shared_store.load()
+        except (ValueError, OSError) as exc:
+            shared_task = None
+            st.error(f"共享空间无法读取：{exc}")
+        if shared_task is None:
+            st.info("共享空间还是空的：先在任意设备上点「发布到云端共享」。")
+        else:
+            store.save(shared_task)
+            st.session_state.task = shared_task
+            for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
+                st.session_state.pop(key, None)
+            st.success(f"已载入共享任务：{shared_task.name}")
+            st.rerun()
+
+    st.markdown("**手动迁移：对账包**")
+    st.caption("导出的文件保存在你自己的电脑上；换电脑时用导入恢复，这条通道不经过服务器自动同步。")
+    if task:
+        st.download_button("导出对账包（保存到本机）",
+                           json.dumps(task.to_dict(), ensure_ascii=False).encode("utf-8"),
+                           file_name=f"P14-对账包-{task.name}.json", mime="application/json")
+    with st.form("bundle_import", clear_on_submit=True):
+        up = st.file_uploader("导入对账包（.json）", type=["json"])
+        if st.form_submit_button("导入到本机"):
+            if up is None:
+                st.error("请先选择一个对账包文件")
+            else:
+                try:
+                    imported = Task.from_dict(json.loads(up.getvalue().decode("utf-8")))
+                except Exception as exc:
+                    st.error(f"对账包无法解析：{exc}")
+                else:
+                    store.save(imported)
+                    st.session_state.task = imported
+                    for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
+                        st.session_state.pop(key, None)
+                    st.success(f"已导入：{imported.name}")
+                    st.rerun()
+    st.divider()
+
     st.subheader("交付材料")
     for title, filename in [("需求与验收边界", "PRD.md"), ("业务规则与异常分类", "BUSINESS_RULES.md"),
                             ("用户操作说明", "USER_GUIDE.md"), ("待财务确认清单", "BUSINESS_CONFIRMATION.md"),
