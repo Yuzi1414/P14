@@ -139,7 +139,11 @@ class SupabaseStore:
 def _supabase_conf():
     url = (os.getenv("SUPABASE_URL") or "").strip()
     key = (os.getenv("SUPABASE_KEY") or "").strip()
-    return (url, key) if url and key else (None, None)
+    if not (url and key):
+        return (None, None)
+    # 复用 auth 的校验：全角字符、误粘贴的中文等在此统一报错并尽量修复
+    from .auth import clean_supabase_config
+    return clean_supabase_config(url, key)
 
 
 def build_store(local_path, task_key):

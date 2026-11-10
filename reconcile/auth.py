@@ -34,6 +34,52 @@ TABLE = "app_users"
 TIMEOUT = 15.0
 
 
+def clean_supabase_config(url, key):
+    """校验并清洗 Supabase 配置，尽量自动修复常见的粘贴失误。
+
+    线上曾出现 UnicodeEncodeError 崩溃，根因是环境变量里混入了中文/全角字符
+    （例如全角冒号 `https：//`、复制时带上了中文说明文字）。httpx 编码 URL 时
+    直接崩溃，报错难以看懂。这里统一处理：
+      - NFKC 归一化：全角冒号、全角字母数字、全角空格 → 半角
+      - 去掉首尾和中间的空白、首尾的引号
+      - 校验 URL 形如 https://xxxx.supabase.co 且全 ASCII
+      - 校验 key 全 ASCII（JWT 不应含中文）
+    修复不了的抛 RuntimeError，报错信息直接说明该怎么改。
+    """
+    import unicodedata
+
+    url = unicodedata.normalize("NFKC", (url or "")).strip().strip("\"'").replace(" ", "")
+    key = unicodedata.normalize("NFKC", (key or "")).strip().strip("\"'").replace(" ", "")
+
+    if not url or not key:
+        raise RuntimeError(
+            "Supabase 配置不完整：需要同时设置 SUPABASE_URL 和 SUPABASE_KEY 两个环境变量"
+            "（Render 控制台 → Environment）。"
+        )
+    try:
+        url.encode("ascii")
+    except UnicodeEncodeError as exc:
+        bad = "".join(c for c in url if not c.isascii())[:10]
+        raise RuntimeError(
+            f"SUPABASE_URL 里混入了非英文字符（如「{bad}」）。"
+            "请到 Render → Environment 检查该值，只填 Supabase 的 Project URL，"
+            "形如 https://abcdefgh.supabase.co，不要带中文说明或全角标点。"
+        ) from exc
+    if not url.startswith("https://") or not url.rstrip("/").endswith(".supabase.co"):
+        raise RuntimeError(
+            f"SUPABASE_URL 格式不对：当前值开头是「{url[:24]}…」。"
+            "应填 Supabase 的 Project URL，形如 https://abcdefgh.supabase.co。"
+        )
+    try:
+        key.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise RuntimeError(
+            "SUPABASE_KEY 里混入了非英文字符。请重新复制 service_role secret"
+            "（Supabase → Project Settings → API Keys），它是一长串英文字母数字。"
+        ) from exc
+    return url.rstrip("/"), key
+
+
 def _now():
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -64,7 +110,11 @@ class SupabaseAuth:
             "Content-Type": "application/json",
             "Prefer": "return=representation",
         }
-        self._ensure_admin()
+        try:
+            self._ensure_admin()
+        except ValueError:
+            # 启动时网络抖动不应让整个应用崩溃；登录/注册时会再次给出明确报错
+            pass
 
     # ---- low level ----
     def _request(self, method, params=None, body=None, headers=None):
@@ -288,10 +338,12 @@ def build_auth(local_path):
     """按环境变量选择后端：有 Supabase 配置就用云端，否则用本地文件。
 
     返回对象同时暴露 .backend 属性，便于界面上提示当前存储位置。
+    配置无效时抛出 RuntimeError，报错信息直接说明环境变量该怎么改。
     """
     url = (os.getenv("SUPABASE_URL") or "").strip()
     key = (os.getenv("SUPABASE_KEY") or "").strip()
     if url and key:
+        url, key = clean_supabase_config(url, key)
         store = SupabaseAuth(url, key)
         store.backend = "supabase"
         return store
