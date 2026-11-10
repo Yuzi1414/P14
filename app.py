@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import html
 import json
+import os
 import re
 import secrets
 from pathlib import Path
@@ -11,7 +12,7 @@ import pandas as pd
 import streamlit as st
 
 from reconcile.ai import AIError, AIWorker, LocalAI, MODEL
-from reconcile.auth import AuthStore
+from reconcile.auth import build_auth
 from reconcile.demo import load_demo
 from reconcile.engine import candidate_records
 from reconcile.exporter import group_rows, money, record_rows, workbook_bytes
@@ -108,15 +109,22 @@ button {border-radius:11px !important;}
 
 
 # ===================== 登录 / 注册 / 权限门禁 =====================
-auth = AuthStore(ROOT / "runtime/users.json")
+# 线上（Render 免费实例）磁盘是临时的，runtime/users.json 每次重启都会被清空，
+# 表现为「注册的账号第二天就失效」。因此配置了 SUPABASE_URL / SUPABASE_KEY
+# 时账号改存 Supabase；本地未配置环境变量时仍用 runtime/users.json，行为不变。
+auth = build_auth(ROOT / "runtime" / "users.json")
 
 # 刷新(F5)会新建 Streamlit 会话并清空 session_state，导致掉线。
 # 这里用 URL 查询参数保存一个「用户名 + 签名」令牌，刷新后据此自动恢复登录；
 # 签名绑定当前密码哈希，改密码/移除账号后旧令牌自动失效。
+# 密钥优先取环境变量 SESSION_SECRET——否则每次重启重新生成，旧令牌全部失效。
 _SECRET_FILE = ROOT / "runtime" / ".session_secret"
 
 
 def _session_secret():
+    env_value = (os.getenv("SESSION_SECRET") or "").strip()
+    if env_value:
+        return env_value
     try:
         if _SECRET_FILE.exists():
             value = _SECRET_FILE.read_text(encoding="utf-8").strip()
@@ -125,8 +133,11 @@ def _session_secret():
     except OSError:
         pass
     value = secrets.token_hex(32)
-    _SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _SECRET_FILE.write_text(value, encoding="utf-8")
+    try:
+        _SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SECRET_FILE.write_text(value, encoding="utf-8")
+    except OSError:
+        pass
     return value
 
 
@@ -489,6 +500,8 @@ with st.sidebar:
     st.markdown("**运行边界**")
     st.caption("演示规则 demo-1.0 · 未经财务确认")
     st.caption(f"本机数据独立 · 设备标识 {_device}\n\n同一账号在其它电脑登录看不到这里的数据")
+    _auth_backend = "Supabase 云端" if getattr(auth, "backend", "local") == "supabase" else "本地文件"
+    st.caption(f"账户存储：{_auth_backend}")
     st.markdown(f"本地 AI：<span class='ai-dot {'on' if ai_ok else 'off'}'></span>{MODEL} {'可用' if ai_ok else '尚未就绪'}", unsafe_allow_html=True)
     if task:
         st.caption(f"当前任务：{task.name}\n\n{len(task.records)} 条原始记录 / {len(task.groups)} 个结果组")
