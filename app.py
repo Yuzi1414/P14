@@ -19,7 +19,7 @@ from reconcile.exporter import group_rows, money, record_rows, workbook_bytes
 from reconcile.importer import fingerprint, normalize, read_sheet, sheet_names, suggest_mapping
 from reconcile.models import FIELDS, SOURCES, Task
 from reconcile.service import accept_candidate, create_task, record_review
-from reconcile.storage import Store, review_status, timestamp
+from reconcile.storage import build_store, review_status, timestamp
 
 ROOT = Path(__file__).resolve().parent
 st.set_page_config(page_title="P14 · 账务核对工作台", page_icon="▦", layout="wide")
@@ -213,6 +213,27 @@ def _clear_task_state():
         st.session_state.pop(key, None)
 
 
+def _all_task_keys(slug, tag):
+    """列出该账号在云端的所有任务键（各设备一条），用于注销时清理。"""
+    try:
+        from reconcile.storage import _supabase_conf, TABLE, TIMEOUT
+        import httpx
+        url, key = _supabase_conf()
+        if not url or not key:
+            return []
+        resp = httpx.get(
+            url.rstrip("/") + f"/rest/v1/{TABLE}",
+            params={"select": "task_key", "task_key": f"like.{slug}_{tag}_%"},
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=TIMEOUT,
+        )
+        if resp.status_code >= 400:
+            return []
+        return [row["task_key"] for row in resp.json()]
+    except Exception:
+        return []
+
+
 LOGIN_CSS = """<style>
 .st-key-loginbox{
     width:min(470px,92vw);
@@ -310,10 +331,12 @@ def ai_health():
 
 # 每个账号 + 每台设备独立的任务库：账号决定"谁能用"，设备决定"看到哪一份数据"。
 # 同一账号在另一台电脑登录会拿到新的设备标识，因此是空白工作台，不共享对账数据。
+# 线上（Render 免费实例）磁盘是临时的，配置了 Supabase 时任务数据改存云端，重启不丢。
 _uname = current_user["username"]
 _slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", _uname).strip("_") or "user"
 _tag = hashlib.sha256(_uname.encode("utf-8")).hexdigest()[:8]
 _device = _device_id()
+_task_key = f"{_slug}_{_tag}_{_device}"
 task_db_path = ROOT / "runtime" / "tasks" / f"{_slug}_{_tag}" / f"{_device}.db"
 # 兼容改造前的单库布局：本机第一次以新结构打开时，把原有任务库并入当前设备，避免数据凭空消失
 _legacy_db = ROOT / "runtime" / "tasks" / f"{_slug}_{_tag}.db"
@@ -323,10 +346,10 @@ if not task_db_path.exists() and _legacy_db.exists():
         _legacy_db.replace(task_db_path)
     except OSError:
         pass
-store = Store(task_db_path)
+store = build_store(task_db_path, _task_key)
 
 # 共享空间：显式发布才写入，只有本账号的其它设备可以载入；默认不参与同步
-shared_store = Store(ROOT / "runtime" / "shared" / f"{_slug}_{_tag}.db")
+shared_store = build_store(ROOT / "runtime" / "shared" / f"{_slug}_{_tag}.db", f"{_slug}_{_tag}_shared")
 if "task" not in st.session_state:
     try:
         st.session_state.task = store.load()
@@ -486,10 +509,15 @@ with st.sidebar:
                     auth.delete_account(current_user["username"], del_pw)
                     try:
                         # 注销账号时清掉该账号在所有设备上的任务库
-                        for db_file in task_db_path.parent.glob("*.db"):
-                            db_file.unlink(missing_ok=True)
-                        task_db_path.parent.rmdir()
-                    except OSError:
+                        if getattr(store, "backend", "local") == "supabase":
+                            for _dev_key in _all_task_keys(_slug, _tag):
+                                build_store(task_db_path, _dev_key).clear()
+                            build_store(task_db_path, f"{_slug}_{_tag}_shared").clear()
+                        else:
+                            for db_file in task_db_path.parent.glob("*.db"):
+                                db_file.unlink(missing_ok=True)
+                            task_db_path.parent.rmdir()
+                    except (OSError, ValueError):
                         pass
                     _clear_login()
                     _clear_task_state()
@@ -501,7 +529,8 @@ with st.sidebar:
     st.caption("演示规则 demo-1.0 · 未经财务确认")
     st.caption(f"本机数据独立 · 设备标识 {_device}\n\n同一账号在其它电脑登录看不到这里的数据")
     _auth_backend = "Supabase 云端" if getattr(auth, "backend", "local") == "supabase" else "本地文件"
-    st.caption(f"账户存储：{_auth_backend}")
+    _task_backend = "Supabase 云端" if getattr(store, "backend", "local") == "supabase" else "本机文件"
+    st.caption(f"账户存储：{_auth_backend}\n\n任务存储：{_task_backend}")
     st.markdown(f"本地 AI：<span class='ai-dot {'on' if ai_ok else 'off'}'></span>{MODEL} {'可用' if ai_ok else '尚未就绪'}", unsafe_allow_html=True)
     if task:
         st.caption(f"当前任务：{task.name}\n\n{len(task.records)} 条原始记录 / {len(task.groups)} 个结果组")
