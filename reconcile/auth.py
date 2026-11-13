@@ -24,7 +24,7 @@ import hashlib
 import json
 import os
 import secrets
-import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -85,8 +85,16 @@ def clean_supabase_config(url, key):
     return url.rstrip("/"), key
 
 
+_BEIJING = timezone(timedelta(hours=8))
+
+
 def _now():
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+    """按北京时间生成时间戳。
+
+    Render 容器是 UTC，直接取服务器本地时间会比北京时间早 8 小时。
+    新值自带 +08:00 偏移；老的无时区值由界面层换算。
+    """
+    return datetime.now(_BEIJING).isoformat(sep=" ", timespec="seconds")
 
 
 def hash_password(password, salt_hex=None):
@@ -106,6 +114,8 @@ class SupabaseAuth:
     只用到 service_role key（服务端调用，不经浏览器），因此不做行级权限细分；
     请勿把该 key 写进前端代码。
     """
+
+    backend = "supabase"
 
     def __init__(self, url, key):
         self.base = url.rstrip("/") + f"/rest/v1/{TABLE}"
@@ -290,6 +300,8 @@ class SupabaseAuth:
 
 class AuthStore:
     """本地 JSON 存储。接口与 SupabaseAuth 完全一致，可互换。"""
+
+    backend = "local"
 
     def __init__(self, path):
         self.path = Path(path)

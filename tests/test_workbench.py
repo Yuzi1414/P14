@@ -43,3 +43,12 @@ def test_login_demo_review_and_navigation(tmp_path, monkeypatch):
     for page in ("导入与字段确认", "AI 辅助与记录", "交付与说明"):
         app.sidebar.radio[0].set_value(page).run()
         assert not app.exception, page
+
+    # 用户与权限：账号时间要按北京时间渲染，不能把 +08:00 偏移原样显示出来
+    app.sidebar.radio[0].set_value("用户与权限").run()
+    assert not app.exception
+    table = app.dataframe[0].value
+    assert {"用户名", "角色", "创建时间", "最近操作时间"} <= set(table.columns)
+    admin_row = table[table["用户名"] == "admin"].iloc[0]
+    assert "+" not in str(admin_row["创建时间"])
+    assert str(admin_row["最近操作时间"]) not in ("", "None")

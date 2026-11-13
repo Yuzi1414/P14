@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -213,6 +214,27 @@ _TASK_STATE_KEYS = ("task", "staged", "import_logs", "mapping_ai", "seen_jobs", 
 def _clear_task_state():
     for key in _TASK_STATE_KEYS:
         st.session_state.pop(key, None)
+
+
+BEIJING = timezone(timedelta(hours=8))
+
+
+def display_time(value):
+    """账号时间统一按北京时间显示。
+
+    新数据自带 +08:00；老数据是无时区字符串——线上用 Supabase 时那是容器 UTC 时间，
+    本地文件存储时是本机时间，按后端分别解释，避免整个表格偏 8 小时。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return text
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc if auth.backend == "supabase" else BEIJING)
+    return moment.astimezone(BEIJING).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _touch_active():
@@ -929,8 +951,8 @@ if page == "用户与权限":
                "管理员拥有全部权限。旧账号角色显示「未分配」时，需在这里指定后才能进入工作台。")
     users = auth.users()
     st.dataframe([{"用户名": u.get("username", ""), "角色": ROLE_LABELS.get(u.get("role"), "未分配"),
-                   "状态": u.get("status", ""), "创建时间": u.get("created_at", ""),
-                   "最近操作时间": u.get("last_active_at") or "—"} for u in users],
+                   "状态": u.get("status", ""), "创建时间": display_time(u.get("created_at")),
+                   "最近操作时间": display_time(u.get("last_active_at")) or "—"} for u in users],
                  hide_index=True, width="stretch")
     active = [u for u in users if u["status"] == "active"]
     if active:
