@@ -21,9 +21,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\setup-ai.ps1
 
 本地 AI 使用 Ollama `qwen3:4b`，首次下载需要网络和数 GB 磁盘空间。后续由 `scripts/start-ai.ps1` 启动，仅绑定 `127.0.0.1:11434`，关闭云功能，按 CPU 推理配置运行。`start.ps1` 会在运行时已安装时尝试启动它。模型不可用不会破坏规则结果。
 
+线上（Render 免费实例）装不了 Ollama：512 MB 内存装不下 2.4 GB 的权重，磁盘重启即清空。因此线上改走**云端通义千问**——设 `AI_PROVIDER`／`AI_API_KEY` 即可，本地不设变量时行为不变。配置步骤见 [线上 AI 配置](docs/线上AI配置.md)。
+
 若本机代理使 Ollama 下载器返回 EOF，安装脚本会尝试 `scripts/download_model.py`，通过系统 curl 从同一官方 registry 下载并验证各文件 SHA256，不修改证书或系统代理。已安装模型再次执行 setup 不重新下载。
 
-进入工作台后填写左侧操作人，加载合成演示，切换“结果与人工复核”查看依据。银行缺编号的演示记录可体验候选解释与人工关联。更多步骤见 [用户操作说明](docs/USER_GUIDE.md)。
+进入工作台后先登录（或注册一个账号），加载合成演示，切换“结果与人工复核”查看依据。银行缺编号的演示记录可体验候选解释与人工关联。更多步骤见 [用户操作说明](docs/USER_GUIDE.md)。
 
 `dist/` 成果包包含源码、文档、合成样例和验证证据，不包含模型、虚拟环境或本机任务数据库。另一台设备需要按以上脚本重建环境。更新源码后请重启工作台，避免保留旧的内存缓存。
 
@@ -36,7 +38,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\setup-ai.ps1
 .\.venv\Scripts\python.exe scripts\verify_local_ai.py
 ```
 
-- `reconcile/`：导入标准化、规则引擎、AI 适配、复核服务、SQLite 存储及 Excel 导出。
+- `reconcile/`：导入标准化、规则引擎、AI 适配（本地 Ollama／云端千问双后端）、复核服务、SQLite／Supabase 存储及 Excel 导出。
 - `app.py`：Streamlit 工作台，计算逻辑独立于界面。
 - `samples/`：三类合成 Excel、独立预期结果。
 - `docs/`：PRD、业务规则、验收记录、操作与汇报材料。

@@ -28,7 +28,11 @@ from pathlib import Path
 
 import httpx
 
-ROLES = ("admin", "用户")
+# 角色：admin（管理员，全部权限）/ 导入（只能导入并建立对账）/ 复核（只能查看结果并提交复核结论）
+# 旧版本注册的账号角色是「用户」，改造后视为「未分配」，需由管理员在「用户与权限」里指定。
+ROLES = ("admin", "导入", "复核")
+USER_ROLES = ("导入", "复核")
+UNASSIGNED = "用户"
 
 TABLE = "app_users"
 TIMEOUT = 15.0
@@ -172,9 +176,11 @@ class SupabaseAuth:
             # 并发创建时可能撞主键，忽略即可
             pass
 
-    def register(self, username, password):
-        """注册即开通：账号直接生效，不区分录入/复核，统一为普通成员。"""
+    def register(self, username, password, role="导入"):
+        """注册即开通：注册时必须选择「导入」或「复核」角色。"""
         username = (username or "").strip()
+        if role not in USER_ROLES:
+            raise ValueError("请选择注册角色：导入 或 复核")
         if not username:
             raise ValueError("用户名不能为空")
         if len(password) < 4:
@@ -189,7 +195,7 @@ class SupabaseAuth:
                     "username": username.lower(),
                     "password_hash": digest,
                     "salt": salt,
-                    "role": "用户",
+                    "role": role,
                     "status": "active",
                     "created_at": _now(),
                 },
@@ -238,6 +244,21 @@ class SupabaseAuth:
             body={"password_hash": digest, "salt": salt},
         )
 
+    def set_role(self, username, role):
+        """管理员为账号指定角色（导入 / 复核），管理员账号本身不可改。"""
+        if role not in USER_ROLES:
+            raise ValueError("角色只能是「导入」或「复核」")
+        user = self.find(username)
+        if not user:
+            raise ValueError("用户不存在")
+        if user["username"] == "admin":
+            raise ValueError("管理员账号的角色不可修改")
+        self._request(
+            "PATCH",
+            params={"username": f"eq.{user['username']}"},
+            body={"role": role},
+        )
+
 
 class AuthStore:
     """本地 JSON 存储。接口与 SupabaseAuth 完全一致，可互换。"""
@@ -279,9 +300,11 @@ class AuthStore:
         return next((u for u in self._data["users"] if u["username"].lower() == key), None)
 
     # ---- operations ----
-    def register(self, username, password):
-        """注册即开通：账号直接生效，不区分录入/复核，统一为普通成员。"""
+    def register(self, username, password, role="导入"):
+        """注册即开通：注册时必须选择「导入」或「复核」角色。"""
         username = (username or "").strip()
+        if role not in USER_ROLES:
+            raise ValueError("请选择注册角色：导入 或 复核")
         if not username:
             raise ValueError("用户名不能为空")
         if len(password) < 4:
@@ -291,7 +314,7 @@ class AuthStore:
         digest, salt = hash_password(password)
         self._data["users"].append({
             "username": username, "password_hash": digest, "salt": salt,
-            "role": "用户", "status": "active",
+            "role": role, "status": "active",
             "created_at": _now(),
         })
         self._save()
@@ -331,6 +354,18 @@ class AuthStore:
             raise ValueError("原密码错误")
         digest, salt = hash_password(new_password)
         user.update(password_hash=digest, salt=salt)
+        self._save()
+
+    def set_role(self, username, role):
+        """管理员为账号指定角色（导入 / 复核），管理员账号本身不可改。"""
+        if role not in USER_ROLES:
+            raise ValueError("角色只能是「导入」或「复核」")
+        user = self.find(username)
+        if not user:
+            raise ValueError("用户不存在")
+        if user["username"] == "admin":
+            raise ValueError("管理员账号的角色不可修改")
+        user["role"] = role
         self._save()
 
 

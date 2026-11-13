@@ -5,7 +5,7 @@ import time
 import httpx
 import pytest
 
-from reconcile.ai import AIError, AIWorker, LocalAI, validate_suggestion
+from reconcile.ai import AIError, AIWorker, LocalAI, load_config, status, validate_suggestion
 
 
 def test_candidate_out_of_bounds_rejected():
@@ -48,6 +48,65 @@ def test_local_transport_and_failure_modes(mode):
     else:
         with pytest.raises(AIError):
             asyncio.run(client.complete("candidate", {"candidates":[{"id":"A"}]}))
+
+
+def test_default_backend_is_local_ollama(monkeypatch):
+    for name in ("AI_PROVIDER", "AI_API_KEY", "DASHSCOPE_API_KEY", "AI_ENDPOINT", "AI_MODEL", "AI_ENABLED"):
+        monkeypatch.delenv(name, raising=False)
+    config = load_config()
+    assert config.local is True
+    assert config.endpoint == "http://127.0.0.1:11434"
+    assert config.model == "qwen3:4b"
+
+
+def test_cloud_provider_uses_openai_compatible_endpoint(monkeypatch):
+    monkeypatch.setenv("AI_PROVIDER", "qwen")
+    monkeypatch.setenv("AI_API_KEY", "sk-test")
+    monkeypatch.delenv("AI_ENDPOINT", raising=False)
+    monkeypatch.delenv("AI_MODEL", raising=False)
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        body = json.loads(request.content)
+        assert body["response_format"] == {"type": "json_object"}
+        assert body["model"] == "qwen-plus"
+        assert body["stream"] is False
+        return httpx.Response(200, json={"choices": [{"message": {"content":
+            "```json\n{\"candidate_id\":\"A\",\"reason\":\"同金额且有业务编号\",\"cleaning_notes\":[]}\n```"}}]})
+
+    client = LocalAI(transport=httpx.MockTransport(handler))
+    assert client.config.provider == "qwen"
+    assert client.config.endpoint == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    result = asyncio.run(client.complete("candidate", {"candidates": [{"id": "A"}]}))
+    assert result["candidate_id"] == "A"
+    assert seen["url"].endswith("/compatible-mode/v1/chat/completions")
+    assert seen["auth"] == "Bearer sk-test"
+
+
+def test_cloud_without_key_is_not_configured(monkeypatch):
+    monkeypatch.setenv("AI_PROVIDER", "dashscope")
+    monkeypatch.delenv("AI_API_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    config = load_config()
+    assert config.local is False
+    assert config.configured is False
+    assert LocalAI(config=config).health() is False
+    info = status(config)
+    assert info["ok"] is False and info["backend"] == "cloud"
+    assert "AI_API_KEY" in info["hint"]
+    with pytest.raises(AIError, match="AI_API_KEY"):
+        AIWorker(LocalAI(config=config)).submit("candidate", {}, "task")
+
+
+def test_disabled_ai_refuses_requests(monkeypatch):
+    monkeypatch.setenv("AI_ENABLED", "0")
+    config = load_config()
+    assert config.enabled is False and config.configured is False
+    assert LocalAI(config=config).health() is False
+    with pytest.raises(AIError, match="关闭"):
+        asyncio.run(LocalAI(config=config).complete("candidate", {"candidates": [{"id": "A"}]}))
 
 
 def test_worker_cancel_and_single_flight():

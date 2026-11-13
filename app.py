@@ -6,20 +6,22 @@ import json
 import os
 import re
 import secrets
+import shutil
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from reconcile.ai import AIError, AIWorker, LocalAI, MODEL
-from reconcile.auth import build_auth
+from reconcile.ai import AIError, AIWorker, LocalAI
+from reconcile import ai as ai_runtime
+from reconcile.auth import USER_ROLES, build_auth
 from reconcile.demo import load_demo
 from reconcile.engine import candidate_records
 from reconcile.exporter import group_rows, money, record_rows, workbook_bytes
 from reconcile.importer import fingerprint, normalize, read_sheet, sheet_names, suggest_mapping
 from reconcile.models import FIELDS, SOURCES, Task
 from reconcile.service import accept_candidate, create_task, record_review
-from reconcile.storage import build_store, review_status, timestamp
+from reconcile.storage import Store, build_store, review_status, timestamp
 
 ROOT = Path(__file__).resolve().parent
 st.set_page_config(page_title="P14 · 账务核对工作台", page_icon="▦", layout="wide")
@@ -263,7 +265,7 @@ def render_auth_gate():
             '<div class="login-title"><b>账务核对工作台</b><span>P14 / FINANCE OPS</span></div></div>',
             unsafe_allow_html=True,
         )
-        st.markdown('<p class="login-sub">银行流水 · 学生收费 · 财务往来 三方对账。登录后即可进行导入、复核等全部操作，注册即开通。</p>', unsafe_allow_html=True)
+        st.markdown('<p class="login-sub">银行流水 · 学生收费 · 财务往来 三方对账。账号分「导入」与「复核」两种角色：导入负责导入表格并建立对账，复核只查看结果并提交复核结论。注册即开通。</p>', unsafe_allow_html=True)
         tab_login, tab_register = st.tabs(["登录", "注册"])
         with tab_login:
             with st.form("login_form"):
@@ -283,6 +285,9 @@ def render_auth_gate():
                 u = st.text_input("注册用户名", key="reg_u")
                 p = st.text_input("设置密码", type="password", key="reg_p")
                 p2 = st.text_input("确认密码", type="password", key="reg_p2")
+                reg_role = st.radio("注册角色", list(USER_ROLES), horizontal=True, key="reg_role",
+                                    captions=["只能导入表格并建立对账，看不到复核按钮",
+                                              "只能查看对账结果并提交复核结论，不能修改数据"])
                 submitted = st.form_submit_button("注册并登录", type="primary", use_container_width=True, key="reg_submit")
             if submitted:
                 if p != p2:
@@ -291,7 +296,7 @@ def render_auth_gate():
                     st.error("用户名不能为空")
                 else:
                     try:
-                        auth.register(u, p)
+                        auth.register(u, p, reg_role)
                         logged = auth.login(u, p)
                         _clear_task_state()
                         _persist_login(logged)
@@ -311,10 +316,39 @@ if "user" not in st.session_state:
     st.stop()
 current_user = st.session_state["user"]
 
+# 角色决定权限：admin 全部；导入 只能导入/建对账；复核 只能看结果并提交复核结论。
+# 旧版注册的账号 role 仍是「用户」，视为未分配角色，必须由管理员指定后才能进入工作台。
+ROLE_LABELS = {"admin": "管理员", "导入": "导入", "复核": "复核"}
+_role = current_user.get("role")
+if _role not in ROLE_LABELS:
+    st.markdown(LOGIN_CSS, unsafe_allow_html=True)
+    with st.container(key="loginbox"):
+        st.markdown(
+            '<div class="login-head"><div class="login-logo">核</div>'
+            '<div class="login-title"><b>账号尚未分配角色</b><span>P14 / FINANCE OPS</span></div></div>',
+            unsafe_allow_html=True,
+        )
+        st.warning(f"账号「{current_user['username']}」还没有分配「导入」或「复核」角色，暂时无法进入工作台。"
+                   "请联系管理员在「用户与权限」里指定角色后重新登录。")
+        if st.button("退出登录", use_container_width=True):
+            _clear_login()
+            _clear_task_state()
+            st.rerun()
+    st.stop()
+
+can_import = _role in ("admin", "导入")     # 导入表格、建立/替换对账任务
+can_review = _role in ("admin", "复核")     # 查看结果、提交复核结论
+can_manage = _role == "admin"               # 用户与角色管理
+
 
 def _pages():
-    base = ["对账总览", "导入与字段确认", "结果与人工复核", "本地 AI 与记录", "交付与说明"]
-    if current_user["role"] == "admin":
+    base = ["对账总览"]
+    if can_import:
+        base.append("导入与字段确认")
+    if can_review:
+        base += ["结果与人工复核", "AI 辅助与记录"]
+    base.append("交付与说明")
+    if can_manage:
         base.append("用户与权限")
     return base
 
@@ -325,28 +359,40 @@ def worker():
 
 
 @st.cache_data(ttl=10)
-def ai_health():
-    return LocalAI().health()
+def ai_info():
+    return ai_runtime.status()
 
 
-# 每个账号 + 每台设备独立的任务库：账号决定"谁能用"，设备决定"看到哪一份数据"。
-# 同一账号在另一台电脑登录会拿到新的设备标识，因此是空白工作台，不共享对账数据。
-# 线上（Render 免费实例）磁盘是临时的，配置了 Supabase 时任务数据改存云端，重启不丢。
+# 角色拆成「导入 / 复核」后，两方必须看到同一份对账数据：导入建立任务，复核在其中提交结论。
+# 因此任务库改为共享工作区（不再按账号+设备各存一份），账号只决定能进入哪些页面。
 _uname = current_user["username"]
 _slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", _uname).strip("_") or "user"
 _tag = hashlib.sha256(_uname.encode("utf-8")).hexdigest()[:8]
 _device = _device_id()
-_task_key = f"{_slug}_{_tag}_{_device}"
-task_db_path = ROOT / "runtime" / "tasks" / f"{_slug}_{_tag}" / f"{_device}.db"
-# 兼容改造前的单库布局：本机第一次以新结构打开时，把原有任务库并入当前设备，避免数据凭空消失
-_legacy_db = ROOT / "runtime" / "tasks" / f"{_slug}_{_tag}.db"
-if not task_db_path.exists() and _legacy_db.exists():
-    try:
-        task_db_path.parent.mkdir(parents=True, exist_ok=True)
-        _legacy_db.replace(task_db_path)
-    except OSError:
-        pass
+_task_key = "workspace"
+task_db_path = ROOT / "runtime" / "tasks" / "workspace.db"
 store = build_store(task_db_path, _task_key)
+# 兼容改造前的按账号/设备分库：共享工作区里还没有任务时，把当前账号原有任务复制进来，避免数据凭空消失。
+# 这里判断的是「有没有任务」而不是「文件在不在」——空库文件在首次访问时就会被创建出来。
+if getattr(store, "backend", "local") == "local":
+    try:
+        _ws_empty = store.load() is None
+    except (ValueError, OSError):
+        _ws_empty = False
+    if _ws_empty:
+        _old_dir = ROOT / "runtime" / "tasks" / f"{_slug}_{_tag}"
+        _candidates = sorted(_old_dir.glob("*.db"), key=lambda p: p.stat().st_mtime, reverse=True) if _old_dir.exists() else []
+        _flat = ROOT / "runtime" / "tasks" / f"{_slug}_{_tag}.db"
+        if _flat.exists():
+            _candidates.append(_flat)
+        for _old_db in _candidates:
+            try:
+                if Store(_old_db).load() is None:
+                    continue
+                shutil.copy2(_old_db, task_db_path)
+                break
+            except (ValueError, OSError):
+                continue
 
 # 共享空间：显式发布才写入，只有本账号的其它设备可以载入；默认不参与同步
 shared_store = build_store(ROOT / "runtime" / "shared" / f"{_slug}_{_tag}.db", f"{_slug}_{_tag}_shared")
@@ -408,12 +454,18 @@ def metric_card(icon, label, value, bg, fg):
             f'<div><div class="mval">{value}</div><div class="mlab">{label}</div></div></div>')
 
 
-HERO = """<div class="hero">
-  <div class="hero-eyebrow">RECONCILIATION WORKBENCH / LOCAL PROTOTYPE</div>
-  <h1>三方账务核对平台</h1>
-  <p>把重复核对交给规则，把判断依据留给财务人员。银行流水 · 学生收费 · 财务往来 三源对账，所有自动结果均须人工复核。</p>
-  <div class="hero-meta"><span>本地运行</span><span>规则 demo-1.0</span><span>AI 辅助建议</span><span>数据仅存本机</span></div>
-</div>"""
+def eyebrow_html(cloud):
+    return "RECONCILIATION WORKBENCH / " + ("CLOUD DEPLOYMENT" if cloud else "LOCAL PROTOTYPE")
+
+
+def hero_html(cloud, ai):
+    chips = ("云端部署" if cloud else "本地运行", "规则 demo-1.0",
+             f"AI 辅助：{ai['provider_label']}", "数据存 Supabase" if cloud else "数据仅存本机")
+    meta = "".join(f"<span>{chip}</span>" for chip in chips)
+    return (f'<div class="hero"><div class="hero-eyebrow">{eyebrow_html(cloud)}</div>'
+            '<h1>三方账务核对平台</h1>'
+            '<p>把重复核对交给规则，把判断依据留给财务人员。银行流水 · 学生收费 · 财务往来 三源对账，所有自动结果均须人工复核。</p>'
+            f'<div class="hero-meta">{meta}</div></div>')
 
 
 def group_label(group):
@@ -450,7 +502,7 @@ def ai_progress():
         return
     with st.container(border=True):
         if job.status == "running":
-            st.info("本地模型正在生成建议。规则结果保持不变。")
+            st.info(f"{_ai['provider_label']}正在生成建议。规则结果保持不变。")
             if st.button("取消 AI 请求", key="cancel_ai"):
                 worker().cancel(jid)
             return
@@ -476,7 +528,7 @@ def ai_progress():
                     st.session_state.import_logs.append(log)
             st.session_state.seen_jobs.add(jid)
         if job.status == "success":
-            st.success(f"本地 AI 建议已生成 · {job.elapsed:.1f} 秒 · 请核查依据后决定是否采纳")
+            st.success(f"AI 建议已生成 · {job.elapsed:.1f} 秒 · 请核查依据后决定是否采纳")
             render_suggestion(job.result)
         else:
             st.warning(job.error)
@@ -486,15 +538,17 @@ def ai_progress():
 
 
 with st.sidebar:
-    ai_ok = ai_health()
+    _ai = ai_info()
+    ai_ok = _ai["ok"]
     st.markdown(f"""<div class="sidebar-brand">
       <div class="sidebar-logo">核</div>
       <div class="sidebar-brand-t"><b>账务核对工作台</b><span>P14 / FINANCE OPS</span></div>
     </div>""", unsafe_allow_html=True)
     page = st.radio("工作区", _pages(), label_visibility="collapsed")
     st.markdown("**当前用户**")
-    role_label = "管理员" if current_user["role"] == "admin" else "成员"
-    st.caption(f"{current_user['username']} · {role_label}")
+    role_label = ROLE_LABELS.get(_role, "未分配")
+    role_hint = {"admin": "全部权限", "导入": "仅导入与建立对账", "复核": "仅查看结果并提交复核"}.get(_role, "")
+    st.caption(f"{current_user['username']} · {role_label}（{role_hint}）")
     if st.button("退出登录"):
         _clear_login()
         _clear_task_state()
@@ -508,15 +562,11 @@ with st.sidebar:
                 try:
                     auth.delete_account(current_user["username"], del_pw)
                     try:
-                        # 注销账号时清掉该账号在所有设备上的任务库
+                        # 对账数据属于共享工作区（导入与复核共用），注销个人账号时不清空；
+                        # 只清理改造前遗留在云端、属于本账号的旧分库副本。
                         if getattr(store, "backend", "local") == "supabase":
                             for _dev_key in _all_task_keys(_slug, _tag):
                                 build_store(task_db_path, _dev_key).clear()
-                            build_store(task_db_path, f"{_slug}_{_tag}_shared").clear()
-                        else:
-                            for db_file in task_db_path.parent.glob("*.db"):
-                                db_file.unlink(missing_ok=True)
-                            task_db_path.parent.rmdir()
                     except (OSError, ValueError):
                         pass
                     _clear_login()
@@ -527,20 +577,25 @@ with st.sidebar:
     st.divider()
     st.markdown("**运行边界**")
     st.caption("演示规则 demo-1.0 · 未经财务确认")
-    st.caption(f"本机数据独立 · 设备标识 {_device}\n\n同一账号在其它电脑登录看不到这里的数据")
+    st.caption(f"共享对账工作区 · 设备标识 {_device}\n\n导入与复核账号共用同一份对账数据")
     _auth_backend = "Supabase 云端" if getattr(auth, "backend", "local") == "supabase" else "本地文件"
     _task_backend = "Supabase 云端" if getattr(store, "backend", "local") == "supabase" else "本机文件"
     st.caption(f"账户存储：{_auth_backend}\n\n任务存储：{_task_backend}")
-    st.markdown(f"本地 AI：<span class='ai-dot {'on' if ai_ok else 'off'}'></span>{MODEL} {'可用' if ai_ok else '尚未就绪'}", unsafe_allow_html=True)
+    st.markdown(f"{_ai['provider_label']}：<span class='ai-dot {'on' if ai_ok else 'off'}'></span>{_ai['model']} {'可用' if ai_ok else '未就绪'}", unsafe_allow_html=True)
+    if not ai_ok:
+        st.caption(_ai["hint"])
     if task:
         st.caption(f"当前任务：{task.name}\n\n{len(task.records)} 条原始记录 / {len(task.groups)} 个结果组")
 
 actor = current_user["username"]
+# 只要账户或任务任一走了 Supabase，就说明这是线上部署，文案不该再写"仅存本机"
+_cloud = (getattr(store, "backend", "local") == "supabase"
+          or getattr(auth, "backend", "local") == "supabase")
 
 if page == "对账总览":
-    st.markdown(HERO, unsafe_allow_html=True)
+    st.markdown(hero_html(_cloud, _ai), unsafe_allow_html=True)
 else:
-    st.markdown('<div class="eyebrow">RECONCILIATION WORKBENCH / LOCAL PROTOTYPE</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="eyebrow">{eyebrow_html(_cloud)}</div>', unsafe_allow_html=True)
     st.title(page)
     st.markdown('<div class="hero-note">把重复核对交给规则，把判断依据留给财务人员。所有自动结果均须人工复核，原型不用于正式财务结算。</div>', unsafe_allow_html=True)
 
@@ -549,7 +604,7 @@ def demo_controls():
     allowed = True
     if task:
         allowed = st.checkbox("我确认用合成演示替换当前任务（当前复核记录将被替换）", key="demo_replace")
-    if st.button("加载合成演示并运行对账", type="primary", disabled=not allowed or worker().busy):
+    if st.button("加载合成演示并运行对账", type="primary", disabled=not allowed or not can_import or worker().busy):
         st.session_state.task = load_demo()
         persist()
         st.rerun()
@@ -579,10 +634,13 @@ if page == "对账总览":
         st.download_button("导出完整核对工作簿", workbook_bytes(task), "P14-对账结果.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
-        st.info("尚未建立任务。可以加载独立合成样例体验完整流程，也可以进入“导入与字段确认”导入授权数据。")
-    with st.expander("合成演示数据", expanded=not bool(task)):
-        st.caption("样例覆盖金额差异、缺少来源、批次汇总、重复编号、退款、跨日与模糊候选。全部为虚构数据。")
-        demo_controls()
+        st.info("尚未建立任务。导入账号可加载独立合成样例体验完整流程，也可以进入“导入与字段确认”导入授权数据。")
+        if not can_import:
+            st.caption("当前是复核账号：只能查看结果并提交复核结论，不能导入或替换对账数据。")
+    if can_import:
+        with st.expander("合成演示数据", expanded=not bool(task)):
+            st.caption("样例覆盖金额差异、缺少来源、批次汇总、重复编号、退款、跨日与模糊候选。全部为虚构数据。")
+            demo_controls()
 
 elif page == "导入与字段确认":
     st.info("在本机选择授权的脱敏/模拟文件。先确认每份文件的工作表、表头和字段，再建立新任务。")
@@ -609,7 +667,8 @@ elif page == "导入与字段确认":
                         frame = read_sheet(content, upload.name, selected_sheet, header)
                         st.dataframe(frame.head(8).astype(str), hide_index=True, width="stretch")
                         defaults = suggest_mapping(frame.columns)
-                        if st.button("请本地 AI 建议字段与清洗方式", key=ikey + "_ai"):
+                        if st.button("请 AI 建议字段与清洗方式", key=ikey + "_ai",
+                                     disabled=not ai_ok, help=None if ai_ok else _ai["hint"]):
                             submit_ai("mapping", {"standard_fields": FIELDS, "columns": list(frame.columns),
                                                   "sample_rows": frame.head(3).astype(str).to_dict("records")}, {"import_key": ikey})
                         suggestion = st.session_state.mapping_ai.get(ikey)
@@ -666,7 +725,7 @@ elif page == "导入与字段确认":
             persist()
             st.session_state.staged = {}
             st.session_state.import_logs = []
-            st.success("对账完成，已保存。请进入结果与人工复核。")
+            st.success("对账完成，已保存。复核账号登录后可在「结果与人工复核」查看结果并提交复核结论。")
         except ValueError as exc:
             st.error(str(exc))
 
@@ -707,7 +766,9 @@ elif page == "结果与人工复核":
                         st.rerun()
                     except ValueError as exc:
                         st.error(str(exc))
-            orphan_pairs = [p for p in task.pairs if p.id in group.pair_ids and len(p.left_ids) == 1 and not p.right_ids]
+            if not can_import:
+                st.caption("复核账号只读：候选补配、建立关联属于修改对账数据，只能由导入账号处理；此处仅可提交复核结论。")
+            orphan_pairs = [p for p in task.pairs if p.id in group.pair_ids and len(p.left_ids) == 1 and not p.right_ids] if can_import else []
             if orphan_pairs:
                 st.subheader("人工候选关联")
                 pmap = {p.id: p for p in orphan_pairs}
@@ -724,7 +785,8 @@ elif page == "结果与人工复核":
                     st.caption("模型说明可能有误。程序核对结果单独列出字段是否一致；缺少字段不表示一致。")
                     minimal = lambda r: {"id": r.id, "business_id": r.business_id, "object_id": r.object_id,
                                          "name": r.name, "date": r.date, "amount": money(r.amount_cents), "direction": r.direction}
-                    if st.button("请本地 AI 解释候选", key="candidate_ai_" + pid):
+                    if st.button("请 AI 解释候选", key="candidate_ai_" + pid,
+                                 disabled=not ai_ok, help=None if ai_ok else _ai["hint"]):
                         submit_ai("candidate", {"bank": minimal(record_map[bank_id]),
                                   "candidates": [minimal(r) for _, r in candidates]},
                                   {"bank_id": bank_id, "relation": pair.relation})
@@ -748,14 +810,16 @@ elif page == "结果与人工复核":
                     st.info("当前没有未分配候选，保留未匹配结果。")
         st.download_button("导出含复核记录的完整工作簿", workbook_bytes(task), "P14-对账结果.xlsx")
 
-elif page == "本地 AI 与记录":
-    st.subheader("本地推理状态")
-    if ai_health():
-        st.success(f"{MODEL} 已就绪，数据只发送到本机服务。")
+elif page == "AI 辅助与记录":
+    st.subheader("AI 服务状态")
+    _page_ai = ai_info()
+    if _page_ai["ok"]:
+        st.success(_page_ai["hint"])
     else:
-        st.warning("尚未检测到模型。运行 scripts/setup-ai.ps1 完成下载，再运行 scripts/start-ai.ps1。")
+        st.warning(_page_ai["hint"])
+    st.caption(f"后端：{_page_ai['provider_label']} · 模型：{_page_ai['model']} · 接口：{_page_ai['endpoint']}")
     if st.button("重新检测模型"):
-        ai_health.clear()
+        ai_info.clear()
         st.rerun()
     st.caption("AI只提出字段、清洗和候选建议。映射和关联必须由人接受，规则引擎负责金额与分类。")
     if task and task.ai_logs:
@@ -775,37 +839,40 @@ elif page == "本地 AI 与记录":
                 persist()
                 st.success("已记录人工判断")
     else:
-        st.info("还没有当前任务的 AI 使用记录。可在字段映射或候选关联处发起本地模型请求。")
+        st.info("还没有当前任务的 AI 使用记录。可在字段映射或候选关联处发起 AI 建议请求。")
     if task:
         with st.expander("人工复核操作记录"):
             st.json(task.reviews)
 
 else:
     st.subheader("数据存放与共享")
-    st.caption(f"本机模式（默认）：数据只保存在当前设备（{_device}），其它电脑登录同一账号看不到；需要跨设备时用下面的显式操作。")
+    st.caption(f"导入与复核共用一个对账工作区（当前设备标识 {_device}）：导入账号建立的任务，复核账号登录后直接看到同一份结果与复核记录。")
     if not task:
-        st.caption("当前没有任务；可以先「从云端共享载入」，或导入对账数据后再发布。")
-    c_share, c_load = st.columns(2)
-    if c_share.button("发布到云端共享", use_container_width=True, disabled=task is None,
-                      help="把当前任务复制到本账号的共享空间，供其它设备载入"):
-        shared_store.save(task)
-        st.success(f"已发布到共享空间（{timestamp()}）。其它设备可用「从云端共享载入」获取。")
-    if c_load.button("从云端共享载入", use_container_width=True,
-                     help="用共享空间的最新任务覆盖这台电脑当前的任务"):
-        try:
-            shared_task = shared_store.load()
-        except (ValueError, OSError) as exc:
-            shared_task = None
-            st.error(f"共享空间无法读取：{exc}")
-        if shared_task is None:
-            st.info("共享空间还是空的：先在任意设备上点「发布到云端共享」。")
-        else:
-            store.save(shared_task)
-            st.session_state.task = shared_task
-            for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
-                st.session_state.pop(key, None)
-            st.success(f"已载入共享任务：{shared_task.name}")
-            st.rerun()
+        st.caption("当前没有任务；请由导入账号导入对账数据并运行规则对账。")
+    if not can_import:
+        st.info("复核账号只读：不能发布、载入或导入对账数据，以免覆盖导入账号建立的结果。下方可正常导出查看。")
+    if can_import:
+        c_share, c_load = st.columns(2)
+        if c_share.button("发布到云端共享", use_container_width=True, disabled=task is None,
+                          help="把当前任务复制到本账号的共享空间，供其它设备载入"):
+            shared_store.save(task)
+            st.success(f"已发布到共享空间（{timestamp()}）。其它设备可用「从云端共享载入」获取。")
+        if c_load.button("从云端共享载入", use_container_width=True,
+                         help="用共享空间的最新任务覆盖当前工作区的任务"):
+            try:
+                shared_task = shared_store.load()
+            except (ValueError, OSError) as exc:
+                shared_task = None
+                st.error(f"共享空间无法读取：{exc}")
+            if shared_task is None:
+                st.info("共享空间还是空的：先在任意设备上点「发布到云端共享」。")
+            else:
+                store.save(shared_task)
+                st.session_state.task = shared_task
+                for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
+                    st.session_state.pop(key, None)
+                st.success(f"已载入共享任务：{shared_task.name}")
+                st.rerun()
 
     st.markdown("**手动迁移：对账包**")
     st.caption("导出的文件保存在你自己的电脑上；换电脑时用导入恢复，这条通道不经过服务器自动同步。")
@@ -813,23 +880,24 @@ else:
         st.download_button("导出对账包（保存到本机）",
                            json.dumps(task.to_dict(), ensure_ascii=False).encode("utf-8"),
                            file_name=f"P14-对账包-{task.name}.json", mime="application/json")
-    with st.form("bundle_import", clear_on_submit=True):
-        up = st.file_uploader("导入对账包（.json）", type=["json"])
-        if st.form_submit_button("导入到本机"):
-            if up is None:
-                st.error("请先选择一个对账包文件")
-            else:
-                try:
-                    imported = Task.from_dict(json.loads(up.getvalue().decode("utf-8")))
-                except Exception as exc:
-                    st.error(f"对账包无法解析：{exc}")
+    if can_import:
+        with st.form("bundle_import", clear_on_submit=True):
+            up = st.file_uploader("导入对账包（.json）", type=["json"])
+            if st.form_submit_button("导入到本机"):
+                if up is None:
+                    st.error("请先选择一个对账包文件")
                 else:
-                    store.save(imported)
-                    st.session_state.task = imported
-                    for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
-                        st.session_state.pop(key, None)
-                    st.success(f"已导入：{imported.name}")
-                    st.rerun()
+                    try:
+                        imported = Task.from_dict(json.loads(up.getvalue().decode("utf-8")))
+                    except Exception as exc:
+                        st.error(f"对账包无法解析：{exc}")
+                    else:
+                        store.save(imported)
+                        st.session_state.task = imported
+                        for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
+                            st.session_state.pop(key, None)
+                        st.success(f"已导入：{imported.name}")
+                        st.rerun()
     st.divider()
 
     st.subheader("交付材料")
@@ -844,24 +912,43 @@ else:
 
 if page == "用户与权限":
     st.subheader("用户与权限管理")
+    st.caption("「导入」账号只能导入表格并建立对账；「复核」账号只查看结果并提交复核结论，不能修改数据；"
+               "管理员拥有全部权限。旧账号角色显示「未分配」时，需在这里指定后才能进入工作台。")
     users = auth.users()
-    st.dataframe([{k: u.get(k, "") for k in ("username", "status", "created_at")} for u in users],
+    st.dataframe([{"用户名": u.get("username", ""), "角色": ROLE_LABELS.get(u.get("role"), "未分配"),
+                   "状态": u.get("status", ""), "创建时间": u.get("created_at", "")} for u in users],
                  hide_index=True, width="stretch")
     active = [u for u in users if u["status"] == "active"]
     if active:
-        st.markdown("**在职账号**")
+        st.markdown("**在职账号与角色**")
         for u in active:
-            c1, c2 = st.columns([4, 1])
+            c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
             c1.write(u["username"] + ("（管理员）" if u["username"] == "admin" else ""))
-            if u["username"] != "admin":
-                if c2.button("移除", key="arm_" + u["username"]):
-                    try:
-                        auth.reject(u["username"])
-                        st.rerun()
-                    except ValueError as exc:
-                        st.error(str(exc))
-            else:
-                c2.caption("管理员")
+            if u["username"] == "admin":
+                c2.caption("管理员 · 全部权限")
+                c3.caption("—")
+                c4.caption("—")
+                continue
+            current_role = u.get("role")
+            picked = c2.selectbox("角色", list(USER_ROLES),
+                                  index=list(USER_ROLES).index(current_role) if current_role in USER_ROLES else None,
+                                  placeholder="未分配（请选择）", key="role_" + u["username"],
+                                  label_visibility="collapsed")
+            if c3.button("保存", key="save_role_" + u["username"], disabled=picked is None or picked == current_role):
+                try:
+                    auth.set_role(u["username"], picked)
+                    st.success(f"已把 {u['username']} 设为「{picked}」。该账号需重新登录后生效。")
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+            if c4.button("移除", key="arm_" + u["username"]):
+                try:
+                    auth.reject(u["username"])
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+            if current_role not in USER_ROLES:
+                c1.caption("当前未分配角色：登录后会被拦在角色分配页，无法进入工作台。")
     st.markdown("**修改密码**")
     with st.form("chpwd_form"):
         old_p = st.text_input("原密码", type="password")
