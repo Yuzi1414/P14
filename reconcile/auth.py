@@ -16,7 +16,8 @@ Supabase 侧需要一张表（SQL 见 docs/supabase_setup.sql）：
         salt          text not null,
         role          text not null default '用户',
         status        text not null default 'active',
-        created_at    text not null default ''
+        created_at    text not null default '',
+        last_active_at text not null default ''
     );
 """
 import hashlib
@@ -140,6 +141,24 @@ class SupabaseAuth:
         except json.JSONDecodeError:
             return []
 
+    def _insert_user(self, body, headers=None):
+        """写入账号行。
+
+        云端表若还是旧结构（缺少 last_active_at 列），PostgREST 会整行拒绝，
+        新用户注册 / 管理员初始化就会失败；这里去掉该字段重试一次，旧库也能正常用。
+        """
+        hdrs = headers or {}
+        try:
+            return self._request("POST", body=body, headers=hdrs)
+        except ValueError as exc:
+            if "last_active_at" not in body or "last_active_at" not in str(exc):
+                raise
+            return self._request(
+                "POST",
+                body={k: v for k, v in body.items() if k != "last_active_at"},
+                headers=hdrs,
+            )
+
     # ---- queries ----
     def users(self):
         rows = self._request("GET", params={"select": "*", "order": "created_at.asc"})
@@ -160,15 +179,15 @@ class SupabaseAuth:
             return
         digest, salt = hash_password("admin123")
         try:
-            self._request(
-                "POST",
-                body={
+            self._insert_user(
+                {
                     "username": "admin",
                     "password_hash": digest,
                     "salt": salt,
                     "role": "admin",
                     "status": "active",
                     "created_at": _now(),
+                    "last_active_at": _now(),
                 },
                 headers={"Prefer": "resolution=merge-duplicates,return=representation"},
             )
@@ -189,17 +208,15 @@ class SupabaseAuth:
             raise ValueError("用户名已存在")
         digest, salt = hash_password(password)
         try:
-            self._request(
-                "POST",
-                body={
-                    "username": username.lower(),
-                    "password_hash": digest,
-                    "salt": salt,
-                    "role": role,
-                    "status": "active",
-                    "created_at": _now(),
-                },
-            )
+            self._insert_user({
+                "username": username.lower(),
+                "password_hash": digest,
+                "salt": salt,
+                "role": role,
+                "status": "active",
+                "created_at": _now(),
+                "last_active_at": _now(),
+            })
         except ValueError as exc:
             # 主键冲突说明刚好被别的请求注册了
             if "409" in str(exc) or "duplicate" in str(exc).lower():
@@ -259,6 +276,17 @@ class SupabaseAuth:
             body={"role": role},
         )
 
+    def touch(self, username):
+        """记录账号最近一次业务操作时间（导入 / 建账 / 复核 / 采纳候选等）。"""
+        user = self.find(username)
+        if not user:
+            return
+        self._request(
+            "PATCH",
+            params={"username": f"eq.{user['username']}"},
+            body={"last_active_at": _now()},
+        )
+
 
 class AuthStore:
     """本地 JSON 存储。接口与 SupabaseAuth 完全一致，可互换。"""
@@ -288,6 +316,7 @@ class AuthStore:
                 "username": "admin", "password_hash": digest, "salt": salt,
                 "role": "admin", "status": "active",
                 "requested_role": "admin", "created_at": _now(),
+                "last_active_at": _now(),
             })
             self._save()
 
@@ -316,6 +345,7 @@ class AuthStore:
             "username": username, "password_hash": digest, "salt": salt,
             "role": role, "status": "active",
             "created_at": _now(),
+            "last_active_at": _now(),
         })
         self._save()
 
@@ -366,6 +396,14 @@ class AuthStore:
         if user["username"] == "admin":
             raise ValueError("管理员账号的角色不可修改")
         user["role"] = role
+        self._save()
+
+    def touch(self, username):
+        """记录账号最近一次业务操作时间（导入 / 建账 / 复核 / 采纳候选等）。"""
+        user = self.find(username)
+        if not user:
+            return
+        user["last_active_at"] = _now()
         self._save()
 
 

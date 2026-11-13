@@ -11,8 +11,12 @@ create table if not exists public.app_users (
     salt          text not null,
     role          text not null default '用户',
     status        text not null default 'active',
-    created_at    text not null default ''
+    created_at    text not null default '',
+    last_active_at text not null default ''
 );
+
+-- 旧库补列：没有这一列时，账号「最近操作时间」只能显示「—」。
+alter table public.app_users add column if not exists last_active_at text not null default '';
 
 -- ============ 2. 任务表 ============
 -- 原本存在 runtime/tasks/*.db，同样是临时磁盘，重启丢失。

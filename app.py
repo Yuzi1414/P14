@@ -215,6 +215,14 @@ def _clear_task_state():
         st.session_state.pop(key, None)
 
 
+def _touch_active():
+    """业务操作成功后刷新当前账号的「最近操作时间」；打点失败不阻断主流程。"""
+    try:
+        auth.touch(current_user["username"])
+    except Exception:
+        pass
+
+
 def _all_task_keys(slug, tag):
     """列出该账号在云端的所有任务键（各设备一条），用于注销时清理。"""
     try:
@@ -700,6 +708,7 @@ elif page == "导入与字段确认":
                                     "工作表": selected_sheet, "表头行": header, "映射": mapping,
                                     "确认人": actor, "确认时间": timestamp(), "AI建议": bool(suggestion)}}
                                 st.success(f"已确认 {len(records)} 行；同文件同工作表再次确认会替换暂存，不重复添加。")
+                                _touch_active()
                 except (ValueError, OSError, KeyError) as exc:
                     st.error(f"文件未加入：{exc}")
                 except Exception as exc:
@@ -726,6 +735,7 @@ elif page == "导入与字段确认":
             st.session_state.staged = {}
             st.session_state.import_logs = []
             st.success("对账完成，已保存。复核账号登录后可在「结果与人工复核」查看结果并提交复核结论。")
+            _touch_active()
         except ValueError as exc:
             st.error(str(exc))
 
@@ -763,6 +773,7 @@ elif page == "结果与人工复核":
                     try:
                         record_review(task, gid, action, actor, note)
                         persist()
+                        _touch_active()
                         st.rerun()
                     except ValueError as exc:
                         st.error(str(exc))
@@ -803,6 +814,7 @@ elif page == "结果与人工复核":
                             if latest:
                                 latest["adoption"] = "已采纳候选" if latest["suggestion"]["candidate_id"] == candidate_id else "人工选择其他候选"
                             persist()
+                            _touch_active()
                             st.rerun()
                         except ValueError as exc:
                             st.error(str(exc))
@@ -837,6 +849,7 @@ elif page == "AI 辅助与记录":
                 task.reviews.append({"id": lid + "_" + timestamp(), "group_id": "", "action": "AI建议判断", "actor": actor,
                                      "note": rationale, "ai_log_id": lid, "decision": decision, "at": timestamp()})
                 persist()
+                _touch_active()
                 st.success("已记录人工判断")
     else:
         st.info("还没有当前任务的 AI 使用记录。可在字段映射或候选关联处发起 AI 建议请求。")
@@ -916,7 +929,8 @@ if page == "用户与权限":
                "管理员拥有全部权限。旧账号角色显示「未分配」时，需在这里指定后才能进入工作台。")
     users = auth.users()
     st.dataframe([{"用户名": u.get("username", ""), "角色": ROLE_LABELS.get(u.get("role"), "未分配"),
-                   "状态": u.get("status", ""), "创建时间": u.get("created_at", "")} for u in users],
+                   "状态": u.get("status", ""), "创建时间": u.get("created_at", ""),
+                   "最近操作时间": u.get("last_active_at") or "—"} for u in users],
                  hide_index=True, width="stretch")
     active = [u for u in users if u["status"] == "active"]
     if active:
