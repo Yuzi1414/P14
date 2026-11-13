@@ -222,8 +222,8 @@ BEIJING = timezone(timedelta(hours=8))
 def display_time(value):
     """账号时间统一按北京时间显示。
 
-    新数据自带 +08:00；老数据是无时区字符串——线上用 Supabase 时那是容器 UTC 时间，
-    本地文件存储时是本机时间，按后端分别解释，避免整个表格偏 8 小时。
+    新数据自带 +08:00，直接换算即可；老数据是无时区字符串，写的是「当时那台机器的本地时间」：
+    线上 Supabase 一直由 UTC 容器写入，本地文件存储则跟随运行它的机器，所以分开解释。
     """
     text = str(value or "").strip()
     if not text:
@@ -233,7 +233,10 @@ def display_time(value):
     except ValueError:
         return text
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc if auth.backend == "supabase" else BEIJING)
+        if auth.backend == "supabase":
+            moment = moment.replace(tzinfo=timezone.utc)
+        else:
+            moment = moment.replace(tzinfo=datetime.now().astimezone().tzinfo)
     return moment.astimezone(BEIJING).strftime("%Y-%m-%d %H:%M:%S")
 
 
