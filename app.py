@@ -15,6 +15,7 @@ import streamlit as st
 
 from reconcile.ai import AIError, AIWorker, LocalAI
 from reconcile import ai as ai_runtime
+from reconcile.audit import build_audit
 from reconcile.auth import USER_ROLES, build_auth
 from reconcile.demo import load_demo
 from reconcile.engine import candidate_records
@@ -116,6 +117,17 @@ button {border-radius:11px !important;}
 # 表现为「注册的账号第二天就失效」。因此配置了 SUPABASE_URL / SUPABASE_KEY
 # 时账号改存 Supabase；本地未配置环境变量时仍用 runtime/users.json，行为不变。
 auth = build_auth(ROOT / "runtime" / "users.json")
+# 操作记录：谁在什么时候做了什么（登录 / 导入 / 建账 / 复核 / 共享……），
+# 在「用户与权限」页按账号展示。写日志失败不阻断业务。
+audit = build_audit(ROOT / "runtime" / "audit.db")
+
+
+def _audit_add(user, action, detail="", page_name="", task=""):
+    try:
+        audit.add((user or {}).get("username", ""), (user or {}).get("role", ""),
+                  action, detail, page_name, task)
+    except Exception:
+        pass
 
 # 刷新(F5)会新建 Streamlit 会话并清空 session_state，导致掉线。
 # 这里用 URL 查询参数保存一个「用户名 + 签名」令牌，刷新后据此自动恢复登录；
@@ -248,6 +260,14 @@ def _touch_active():
         pass
 
 
+def log_action(action, detail="", page_name=None):
+    """记录一次成功完成的业务操作，供「用户与权限」页追溯。"""
+    current = globals().get("task")
+    _audit_add(current_user, action, detail,
+               page_name if page_name is not None else globals().get("page", ""),
+               current.name if current else "")
+
+
 def _all_task_keys(slug, tag):
     """列出该账号在云端的所有任务键（各设备一条），用于注销时清理。"""
     try:
@@ -310,6 +330,7 @@ def render_auth_gate():
                     logged = auth.login(u, p)
                     _clear_task_state()
                     _persist_login(logged)
+                    _audit_add(logged, "登录", f"角色：{logged.get('role', '')}", "登录")
                     st.rerun()
                 except ValueError as exc:
                     st.error(str(exc))
@@ -333,6 +354,7 @@ def render_auth_gate():
                         logged = auth.login(u, p)
                         _clear_task_state()
                         _persist_login(logged)
+                        _audit_add(logged, "注册账号", f"角色：{reg_role}", "注册")
                         st.rerun()
                     except ValueError as exc:
                         st.error(str(exc))
@@ -519,6 +541,7 @@ def submit_ai(kind, payload, context):
             persist()
         else:
             st.session_state.import_logs.append(log)
+        log_action("发起 AI 建议", "候选解释" if kind == "candidate" else "字段与清洗建议")
         st.rerun()
     except AIError as exc:
         st.error(str(exc))
@@ -594,6 +617,7 @@ with st.sidebar:
             if st.button("注销账户", type="primary", key="del_btn", disabled=not del_sure, use_container_width=True):
                 try:
                     auth.delete_account(current_user["username"], del_pw)
+                    log_action("注销账号", "本人注销")
                     try:
                         # 对账数据属于共享工作区（导入与复核共用），注销个人账号时不清空；
                         # 只清理改造前遗留在云端、属于本账号的旧分库副本。
@@ -640,6 +664,7 @@ def demo_controls():
     if st.button("加载合成演示并运行对账", type="primary", disabled=not allowed or not can_import or worker().busy):
         st.session_state.task = load_demo()
         persist()
+        log_action("加载合成演示", f"任务「{st.session_state.task.name}」· {len(st.session_state.task.records)} 条记录")
         st.rerun()
 
 
@@ -734,6 +759,7 @@ elif page == "导入与字段确认":
                                     "确认人": actor, "确认时间": timestamp(), "AI建议": bool(suggestion)}}
                                 st.success(f"已确认 {len(records)} 行；同文件同工作表再次确认会替换暂存，不重复添加。")
                                 _touch_active()
+                                log_action("确认字段映射", f"{SOURCES[source]} / {upload.name} / {selected_sheet} · {len(records)} 行")
                 except (ValueError, OSError, KeyError) as exc:
                     st.error(f"文件未加入：{exc}")
                 except Exception as exc:
@@ -761,6 +787,9 @@ elif page == "导入与字段确认":
             st.session_state.import_logs = []
             st.success("对账完成，已保存。复核账号登录后可在「结果与人工复核」查看结果并提交复核结论。")
             _touch_active()
+            log_action("建立对账任务", f"任务「{st.session_state.task.name}」· "
+                                       f"{len(st.session_state.task.records)} 条记录 / "
+                                       f"{len(st.session_state.task.groups)} 个结果组")
         except ValueError as exc:
             st.error(str(exc))
 
@@ -799,6 +828,7 @@ elif page == "结果与人工复核":
                         record_review(task, gid, action, actor, note)
                         persist()
                         _touch_active()
+                        log_action("提交复核结论", f"{action} · {group.label}" + (f" · {note[:60]}" if note.strip() else ""))
                         st.rerun()
                     except ValueError as exc:
                         st.error(str(exc))
@@ -840,6 +870,8 @@ elif page == "结果与人工复核":
                                 latest["adoption"] = "已采纳候选" if latest["suggestion"]["candidate_id"] == candidate_id else "人工选择其他候选"
                             persist()
                             _touch_active()
+                            log_action("人工建立候选关联",
+                                       f"{pair.relation} · {record_map[candidate_id].business_id} · 依据：{evidence}")
                             st.rerun()
                         except ValueError as exc:
                             st.error(str(exc))
@@ -875,6 +907,7 @@ elif page == "AI 辅助与记录":
                                      "note": rationale, "ai_log_id": lid, "decision": decision, "at": timestamp()})
                 persist()
                 _touch_active()
+                log_action("保存 AI 使用判断", f"{decision} · 记录 {lid}")
                 st.success("已记录人工判断")
     else:
         st.info("还没有当前任务的 AI 使用记录。可在字段映射或候选关联处发起 AI 建议请求。")
@@ -894,6 +927,7 @@ else:
         if c_share.button("发布到云端共享", use_container_width=True, disabled=task is None,
                           help="把当前任务复制到本账号的共享空间，供其它设备载入"):
             shared_store.save(task)
+            log_action("发布到云端共享", f"任务「{task.name}」")
             st.success(f"已发布到共享空间（{timestamp()}）。其它设备可用「从云端共享载入」获取。")
         if c_load.button("从云端共享载入", use_container_width=True,
                          help="用共享空间的最新任务覆盖当前工作区的任务"):
@@ -909,6 +943,7 @@ else:
                 st.session_state.task = shared_task
                 for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
                     st.session_state.pop(key, None)
+                log_action("从云端共享载入", f"任务「{shared_task.name}」")
                 st.success(f"已载入共享任务：{shared_task.name}")
                 st.rerun()
 
@@ -934,6 +969,7 @@ else:
                         st.session_state.task = imported
                         for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
                             st.session_state.pop(key, None)
+                        log_action("导入对账包", f"任务「{imported.name}」")
                         st.success(f"已导入：{imported.name}")
                         st.rerun()
     st.divider()
@@ -951,11 +987,21 @@ else:
 if page == "用户与权限":
     st.subheader("用户与权限管理")
     st.caption("「导入」账号只能导入表格并建立对账；「复核」账号只查看结果并提交复核结论，不能修改数据；"
-               "管理员拥有全部权限。旧账号角色显示「未分配」时，需在这里指定后才能进入工作台。")
+               "管理员拥有全部权限。旧账号角色显示「未分配」时，需在这里指定后才能进入工作台。"
+               "下方「操作记录」按账号列出它做过的每一步。")
     users = auth.users()
+    try:
+        events = audit.recent(limit=500)
+    except Exception as exc:
+        events = []
+        st.warning(f"操作记录暂时读不到：{exc}")
+    latest = {}
+    for event in events:
+        latest.setdefault(event.get("actor", ""), event)
     st.dataframe([{"用户名": u.get("username", ""), "角色": ROLE_LABELS.get(u.get("role"), "未分配"),
                    "状态": u.get("status", ""), "创建时间": display_time(u.get("created_at")),
-                   "最近操作时间": display_time(u.get("last_active_at")) or "—"} for u in users],
+                   "最近操作时间": display_time(u.get("last_active_at")) or "—",
+                   "最近操作": (latest.get(u["username"]) or {}).get("action") or "—"} for u in users],
                  hide_index=True, width="stretch")
     active = [u for u in users if u["status"] == "active"]
     if active:
@@ -963,31 +1009,59 @@ if page == "用户与权限":
         for u in active:
             c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
             c1.write(u["username"] + ("（管理员）" if u["username"] == "admin" else ""))
+            current_role = u.get("role")
             if u["username"] == "admin":
                 c2.caption("管理员 · 全部权限")
                 c3.caption("—")
                 c4.caption("—")
-                continue
-            current_role = u.get("role")
-            picked = c2.selectbox("角色", list(USER_ROLES),
-                                  index=list(USER_ROLES).index(current_role) if current_role in USER_ROLES else None,
-                                  placeholder="未分配（请选择）", key="role_" + u["username"],
-                                  label_visibility="collapsed")
-            if c3.button("保存", key="save_role_" + u["username"], disabled=picked is None or picked == current_role):
-                try:
-                    auth.set_role(u["username"], picked)
-                    st.success(f"已把 {u['username']} 设为「{picked}」。该账号需重新登录后生效。")
-                    st.rerun()
-                except ValueError as exc:
-                    st.error(str(exc))
-            if c4.button("移除", key="arm_" + u["username"]):
-                try:
-                    auth.reject(u["username"])
-                    st.rerun()
-                except ValueError as exc:
-                    st.error(str(exc))
-            if current_role not in USER_ROLES:
-                c1.caption("当前未分配角色：登录后会被拦在角色分配页，无法进入工作台。")
+            else:
+                picked = c2.selectbox("角色", list(USER_ROLES),
+                                      index=list(USER_ROLES).index(current_role) if current_role in USER_ROLES else None,
+                                      placeholder="未分配（请选择）", key="role_" + u["username"],
+                                      label_visibility="collapsed")
+                if c3.button("保存", key="save_role_" + u["username"], disabled=picked is None or picked == current_role):
+                    try:
+                        auth.set_role(u["username"], picked)
+                        log_action("修改账号角色", f"{u['username']}：{current_role or '未分配'} → {picked}")
+                        st.success(f"已把 {u['username']} 设为「{picked}」。该账号需重新登录后生效。")
+                        st.rerun()
+                    except ValueError as exc:
+                        st.error(str(exc))
+                if c4.button("移除", key="arm_" + u["username"]):
+                    try:
+                        auth.reject(u["username"])
+                        log_action("移除账号", f"{u['username']}（{ROLE_LABELS.get(current_role, '未分配')}）")
+                        st.rerun()
+                    except ValueError as exc:
+                        st.error(str(exc))
+                if current_role not in USER_ROLES:
+                    c1.caption("当前未分配角色：登录后会被拦在角色分配页，无法进入工作台。")
+            own = [event for event in events if event.get("actor") == u["username"]][:20]
+            with st.expander(f"操作记录 · {u['username']}（最近 {len(own)} 条）"):
+                if own:
+                    st.dataframe([{"时间": display_time(event.get("at")), "操作": event.get("action", ""),
+                                   "说明": event.get("detail", ""), "页面": event.get("page", "")}
+                                  for event in own], hide_index=True, width="stretch")
+                else:
+                    st.caption("这个账号还没有业务操作记录。")
+
+    st.markdown("**最近操作记录**")
+    st.caption("按时间倒序，记录登录、确认字段映射、建立对账、提交复核结论、人工关联、共享与账号设置等成功动作；"
+               "失败的尝试不写入。删除账号后记录仍保留，便于追溯。")
+    c_who, c_size = st.columns([2, 1])
+    who = c_who.selectbox("查看用户", ["全部用户"] + [u["username"] for u in users], key="audit_who")
+    size = c_size.selectbox("显示条数", [50, 100, 200], index=1, key="audit_size")
+    shown = [event for event in events if who == "全部用户" or event.get("actor") == who][:size]
+    if shown:
+        rows = [{"时间": display_time(event.get("at")), "用户": event.get("actor", ""),
+                 "角色": ROLE_LABELS.get(event.get("role"), event.get("role") or "—"),
+                 "操作": event.get("action", ""), "说明": event.get("detail", "")} for event in shown]
+        st.dataframe(rows, hide_index=True, width="stretch")
+        st.download_button("导出操作记录（CSV）", pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig"),
+                           file_name=f"P14-操作记录-{timestamp()[:10]}.csv", mime="text/csv")
+    else:
+        st.info("该账号还没有操作记录。" if who != "全部用户" else
+                "还没有操作记录。登录、导入、建立对账或提交复核后，这里会按时间列出每个账号做了什么。")
     st.markdown("**修改密码**")
     with st.form("chpwd_form"):
         old_p = st.text_input("原密码", type="password")
@@ -999,6 +1073,7 @@ if page == "用户与权限":
             else:
                 try:
                     auth.change_password(current_user["username"], old_p, new_p)
+                    log_action("修改密码", "本人修改")
                     st.success("密码已修改")
                 except ValueError as exc:
                     st.error(str(exc))

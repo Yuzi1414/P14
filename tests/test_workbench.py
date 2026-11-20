@@ -2,6 +2,7 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
+from reconcile.audit import AuditStore
 from reconcile.auth import AuthStore
 from reconcile.storage import Store
 
@@ -9,9 +10,11 @@ from reconcile.storage import Store
 def test_login_demo_review_and_navigation(tmp_path, monkeypatch):
     import reconcile.storage as storage
     import reconcile.auth as auth_mod
+    import reconcile.audit as audit_mod
     import reconcile.ai as ai
     monkeypatch.setattr(storage, "Store", lambda path: Store(tmp_path / "ui.db"))
     monkeypatch.setattr(auth_mod, "build_auth", lambda path: AuthStore(tmp_path / "users.json"))
+    monkeypatch.setattr(audit_mod, "build_audit", lambda path: AuditStore(tmp_path / "audit.db"))
     monkeypatch.setattr(ai.LocalAI, "health", lambda self: False)
     path = Path(__file__).resolve().parents[1] / "app.py"
     app = AppTest.from_file(str(path), default_timeout=20).run()
@@ -48,7 +51,14 @@ def test_login_demo_review_and_navigation(tmp_path, monkeypatch):
     app.sidebar.radio[0].set_value("用户与权限").run()
     assert not app.exception
     table = app.dataframe[0].value
-    assert {"用户名", "角色", "创建时间", "最近操作时间"} <= set(table.columns)
+    assert {"用户名", "角色", "创建时间", "最近操作时间", "最近操作"} <= set(table.columns)
     admin_row = table[table["用户名"] == "admin"].iloc[0]
     assert "+" not in str(admin_row["创建时间"])
     assert str(admin_row["最近操作时间"]) not in ("", "None")
+
+    # 操作记录：登录、加载演示、提交复核都要能按账号追溯
+    actions = [event["action"] for event in AuditStore(tmp_path / "audit.db").recent(50)]
+    assert "登录" in actions
+    assert "加载合成演示" in actions
+    assert "提交复核结论" in actions
+    assert all(event["actor"] == "admin" for event in AuditStore(tmp_path / "audit.db").recent(50))
