@@ -29,10 +29,14 @@ from pathlib import Path
 
 import httpx
 
-# 角色：admin（管理员，全部权限）/ 导入（只能导入并建立对账）/ 复核（只能查看结果并提交复核结论）
+# 角色：
+#   admin     管理员，全部权限（含用户与权限管理）
+#   导入      只能导入表格并建立对账
+#   复核      只能查看结果并提交复核结论
+#   录入复核  导入与复核两种权限都有，还能查看其他账号的录入记录；但没有账号管理权限
 # 旧版本注册的账号角色是「用户」，改造后视为「未分配」，需由管理员在「用户与权限」里指定。
-ROLES = ("admin", "导入", "复核")
-USER_ROLES = ("导入", "复核")
+ROLES = ("admin", "导入", "复核", "录入复核")
+USER_ROLES = ("导入", "复核", "录入复核")
 UNASSIGNED = "用户"
 
 TABLE = "app_users"
@@ -206,10 +210,10 @@ class SupabaseAuth:
             pass
 
     def register(self, username, password, role="导入"):
-        """注册即开通：注册时必须选择「导入」或「复核」角色。"""
+        """注册即开通：注册时必须选择「导入」「复核」或「录入复核」角色。"""
         username = (username or "").strip()
         if role not in USER_ROLES:
-            raise ValueError("请选择注册角色：导入 或 复核")
+            raise ValueError("请选择注册角色：导入、复核 或 录入复核")
         if not username:
             raise ValueError("用户名不能为空")
         if len(password) < 4:
@@ -272,9 +276,9 @@ class SupabaseAuth:
         )
 
     def set_role(self, username, role):
-        """管理员为账号指定角色（导入 / 复核），管理员账号本身不可改。"""
+        """管理员为账号指定角色（导入 / 复核 / 录入复核），管理员账号本身不可改。"""
         if role not in USER_ROLES:
-            raise ValueError("角色只能是「导入」或「复核」")
+            raise ValueError("角色只能是「导入」「复核」或「录入复核」")
         user = self.find(username)
         if not user:
             raise ValueError("用户不存在")
@@ -342,10 +346,10 @@ class AuthStore:
 
     # ---- operations ----
     def register(self, username, password, role="导入"):
-        """注册即开通：注册时必须选择「导入」或「复核」角色。"""
+        """注册即开通：注册时必须选择「导入」「复核」或「录入复核」角色。"""
         username = (username or "").strip()
         if role not in USER_ROLES:
-            raise ValueError("请选择注册角色：导入 或 复核")
+            raise ValueError("请选择注册角色：导入、复核 或 录入复核")
         if not username:
             raise ValueError("用户名不能为空")
         if len(password) < 4:
@@ -399,9 +403,9 @@ class AuthStore:
         self._save()
 
     def set_role(self, username, role):
-        """管理员为账号指定角色（导入 / 复核），管理员账号本身不可改。"""
+        """管理员为账号指定角色（导入 / 复核 / 录入复核），管理员账号本身不可改。"""
         if role not in USER_ROLES:
-            raise ValueError("角色只能是「导入」或「复核」")
+            raise ValueError("角色只能是「导入」「复核」或「录入复核」")
         user = self.find(username)
         if not user:
             raise ValueError("用户不存在")

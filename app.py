@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import html
+import importlib
 import json
 import os
 import re
@@ -15,8 +16,9 @@ import streamlit as st
 
 from reconcile.ai import AIError, AIWorker, LocalAI
 from reconcile import ai as ai_runtime
+from reconcile import auth as auth_module
 from reconcile.audit import build_audit
-from reconcile.auth import USER_ROLES, build_auth
+from reconcile.auth import build_auth
 from reconcile.demo import load_demo
 from reconcile.engine import candidate_records
 from reconcile.exporter import group_rows, money, record_rows, workbook_bytes
@@ -24,6 +26,13 @@ from reconcile.importer import fingerprint, normalize, read_sheet, sheet_names, 
 from reconcile.models import FIELDS, SOURCES, Task
 from reconcile.service import accept_candidate, create_task, record_review
 from reconcile.storage import Store, build_store, review_status, timestamp
+
+# 线上进程可能一直在运行：Streamlit 会重新执行本文件，但已导入的 reconcile.auth
+# 有时仍缓存旧的角色清单，注册页就会少一个角色。发现清单落后时重新载入该模块，
+# 保证不重启也能注册/分配「录入复核」；正常启动时不会触发，行为不变。
+if "录入复核" not in getattr(auth_module, "USER_ROLES", ()):
+    auth_module = importlib.reload(auth_module)
+USER_ROLES = auth_module.USER_ROLES
 
 ROOT = Path(__file__).resolve().parent
 st.set_page_config(page_title="P14 · 账务核对工作台", page_icon="▦", layout="wide")
@@ -318,7 +327,7 @@ def render_auth_gate():
             '<div class="login-title"><b>账务核对工作台</b><span>P14 / FINANCE OPS</span></div></div>',
             unsafe_allow_html=True,
         )
-        st.markdown('<p class="login-sub">银行流水 · 学生收费 · 财务往来 三方对账。账号分「导入」与「复核」两种角色：导入负责导入表格并建立对账，复核只查看结果并提交复核结论。注册即开通。</p>', unsafe_allow_html=True)
+        st.markdown('<p class="login-sub">银行流水 · 学生收费 · 财务往来 三方对账。账号分「导入」「复核」「录入复核」三种角色：导入负责导入表格并建立对账，复核只查看结果并提交复核结论，录入复核两者都能做、还能查看他人的录入记录。注册即开通。</p>', unsafe_allow_html=True)
         tab_login, tab_register = st.tabs(["登录", "注册"])
         with tab_login:
             with st.form("login_form"):
@@ -341,7 +350,8 @@ def render_auth_gate():
                 p2 = st.text_input("确认密码", type="password", key="reg_p2")
                 reg_role = st.radio("注册角色", list(USER_ROLES), horizontal=True, key="reg_role",
                                     captions=["只能导入表格并建立对账，看不到复核按钮",
-                                              "只能查看对账结果并提交复核结论，不能修改数据"])
+                                              "只能查看对账结果并提交复核结论，不能修改数据",
+                                              "录入和复核都能做，可查看其他账号的录入记录，但没有账号管理权限"])
                 submitted = st.form_submit_button("注册并登录", type="primary", use_container_width=True, key="reg_submit")
             if submitted:
                 if p != p2:
@@ -371,9 +381,10 @@ if "user" not in st.session_state:
     st.stop()
 current_user = st.session_state["user"]
 
-# 角色决定权限：admin 全部；导入 只能导入/建对账；复核 只能看结果并提交复核结论。
+# 角色决定权限：admin 全部；导入 只能导入/建对账；复核 只能看结果并提交复核结论；
+# 录入复核 同时具备导入与复核权限，并可查看其他账号的录入记录，但没有账号/角色管理权限。
 # 旧版注册的账号 role 仍是「用户」，视为未分配角色，必须由管理员指定后才能进入工作台。
-ROLE_LABELS = {"admin": "管理员", "导入": "导入", "复核": "复核"}
+ROLE_LABELS = {"admin": "管理员", "导入": "导入", "复核": "复核", "录入复核": "录入+复核"}
 _role = current_user.get("role")
 if _role not in ROLE_LABELS:
     st.markdown(LOGIN_CSS, unsafe_allow_html=True)
@@ -383,7 +394,7 @@ if _role not in ROLE_LABELS:
             '<div class="login-title"><b>账号尚未分配角色</b><span>P14 / FINANCE OPS</span></div></div>',
             unsafe_allow_html=True,
         )
-        st.warning(f"账号「{current_user['username']}」还没有分配「导入」或「复核」角色，暂时无法进入工作台。"
+        st.warning(f"账号「{current_user['username']}」还没有分配「导入」「复核」或「录入+复核」角色，暂时无法进入工作台。"
                    "请联系管理员在「用户与权限」里指定角色后重新登录。")
         if st.button("退出登录", use_container_width=True):
             _clear_login()
@@ -391,9 +402,10 @@ if _role not in ROLE_LABELS:
             st.rerun()
     st.stop()
 
-can_import = _role in ("admin", "导入")     # 导入表格、建立/替换对账任务
-can_review = _role in ("admin", "复核")     # 查看结果、提交复核结论
-can_manage = _role == "admin"               # 用户与角色管理
+can_import = _role in ("admin", "导入", "录入复核")        # 导入表格、建立/替换对账任务
+can_review = _role in ("admin", "复核", "录入复核")        # 查看结果、提交复核结论
+can_view_entries = _role in ("admin", "录入复核")          # 查看所有账号的录入批次与明细
+can_manage = _role == "admin"                              # 用户与角色管理
 
 
 def _pages():
@@ -401,7 +413,11 @@ def _pages():
     if can_import:
         base.append("导入与字段确认")
     if can_review:
-        base += ["结果与人工复核", "AI 辅助与记录"]
+        base.append("结果与人工复核")
+    if can_view_entries:
+        base.append("录入记录")
+    if can_review:
+        base.append("AI 辅助与记录")
     base.append("交付与说明")
     if can_manage:
         base.append("用户与权限")
@@ -418,7 +434,7 @@ def ai_info():
     return ai_runtime.status()
 
 
-# 角色拆成「导入 / 复核」后，两方必须看到同一份对账数据：导入建立任务，复核在其中提交结论。
+# 角色拆成「导入 / 复核 / 录入+复核」后，各角色必须看到同一份对账数据：导入建立任务，复核在其中提交结论。
 # 因此任务库改为共享工作区（不再按账号+设备各存一份），账号只决定能进入哪些页面。
 _uname = current_user["username"]
 _slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", _uname).strip("_") or "user"
@@ -529,6 +545,46 @@ def group_label(group):
     return f"{label} · {sources}"
 
 
+def entry_rows(task):
+    """按导入批次汇总录入情况：哪份文件由谁在什么时间确认导入、一共多少条记录。
+
+    「录入记录」页用它展示共享工作区里各账号的录入结果，而不只是当前账号自己的。
+    老任务或单独导入的数据没有 mappings，则按记录中的文件与工作表补一行，避免漏掉。
+    """
+    batches = {}
+    for meta in task.mappings:
+        key = (meta.get("文件"), meta.get("工作表"))
+        batches[key] = meta
+    counts, source_of = {}, {}
+    for record in task.records:
+        key = (record.file, record.sheet)
+        counts[key] = counts.get(key, 0) + 1
+        source_of[key] = SOURCES.get(record.source, record.source)
+    rows, seen = [], set()
+    for key, meta in batches.items():
+        seen.add(key)
+        who = (meta.get("确认人") or "").strip() or "—"
+        rows.append({
+            "来源": SOURCES.get(meta.get("来源"), meta.get("来源") or source_of.get(key, "—")),
+            "文件": key[0] or "—", "工作表": key[1] or "—", "记录数": counts.get(key, 0),
+            "确认人": who, "确认时间": meta.get("确认时间") or "—",
+            "AI建议": "是" if meta.get("AI建议") else "否",
+        })
+    for key, count in counts.items():
+        if key in seen:
+            continue
+        rows.append({"来源": source_of.get(key, "—"), "文件": key[0] or "—", "工作表": key[1] or "—",
+                     "记录数": count, "确认人": "—", "确认时间": "—", "AI建议": "否"})
+    return rows
+
+
+def with_importer(task, rows):
+    """给记录明细补上「录入人」列，便于按账号查看他人录入的原始行。"""
+    importer = {(meta.get("文件"), meta.get("工作表")): ((meta.get("确认人") or "").strip() or "—")
+                for meta in task.mappings}
+    return [{"录入人": importer.get((row["文件"], row["工作表"]), "—"), **row} for row in rows]
+
+
 def submit_ai(kind, payload, context):
     try:
         jid = worker().submit(kind, payload, task.id if task and kind == "candidate" else "import")
@@ -603,7 +659,8 @@ with st.sidebar:
     page = st.radio("工作区", _pages(), label_visibility="collapsed")
     st.markdown("**当前用户**")
     role_label = ROLE_LABELS.get(_role, "未分配")
-    role_hint = {"admin": "全部权限", "导入": "仅导入与建立对账", "复核": "仅查看结果并提交复核"}.get(_role, "")
+    role_hint = {"admin": "全部权限", "导入": "仅导入与建立对账", "复核": "仅查看结果并提交复核",
+                 "录入复核": "可录入、可复核，并可查看他人录入记录"}.get(_role, "")
     st.caption(f"{current_user['username']} · {role_label}（{role_hint}）")
     if st.button("退出登录"):
         _clear_login()
@@ -634,7 +691,7 @@ with st.sidebar:
     st.divider()
     st.markdown("**运行边界**")
     st.caption("演示规则 demo-1.0 · 未经财务确认")
-    st.caption(f"共享对账工作区 · 设备标识 {_device}\n\n导入与复核账号共用同一份对账数据")
+    st.caption(f"共享对账工作区 · 设备标识 {_device}\n\n各角色共用同一份对账数据")
     _auth_backend = "Supabase 云端" if getattr(auth, "backend", "local") == "supabase" else "本地文件"
     _task_backend = "Supabase 云端" if getattr(store, "backend", "local") == "supabase" else "本机文件"
     st.caption(f"账户存储：{_auth_backend}\n\n任务存储：{_task_backend}")
@@ -879,6 +936,48 @@ elif page == "结果与人工复核":
                     st.info("当前没有未分配候选，保留未匹配结果。")
         st.download_button("导出含复核记录的完整工作簿", workbook_bytes(task), "P14-对账结果.xlsx")
 
+elif page == "录入记录":
+    st.subheader("录入记录（全部账号）")
+    st.caption("共享工作区里每个导入批次的录入人、确认时间与记录数汇总在这里，可按录入人查看原始记录。"
+               "此页只对「录入+复核」和管理员开放；可以查看他人录入结果，但不能管理账号或修改角色。")
+    if not task:
+        st.info("当前还没有任务。由导入账号在「导入与字段确认」建立对账后，各账号的录入结果会汇总到这里。")
+    else:
+        entries = entry_rows(task)
+        people = [name for name in dict.fromkeys(row["确认人"] for row in entries) if name not in ("", "—")]
+        cards = [
+            ("▤", "录入批次 · 个", len(entries), ("#EAF1F7", "#3A6B96")),
+            ("人", "录入账号 · 个", len(people), ("#E6F4EC", "#2E7D5B")),
+            ("≡", "原始记录 · 条", len(task.records), ("#FFF4E0", "#B7791F")),
+        ]
+        for col, (icon, label, value, (bg, fg)) in zip(st.columns(3), cards):
+            col.markdown(metric_card(icon, label, value, bg, fg), unsafe_allow_html=True)
+        st.markdown("**按导入批次**")
+        st.dataframe(entries, hide_index=True, width="stretch")
+        st.markdown("**录入明细**")
+        who = st.selectbox("按录入人筛选", ["全部账号"] + people, key="entry_who")
+        detail = with_importer(task, record_rows(task))
+        if who != "全部账号":
+            detail = [row for row in detail if row["录入人"] == who]
+        st.caption(f"显示 {len(detail)} 条原始记录" + ("" if who == "全部账号" else f" · 录入人 {who}"))
+        st.dataframe(detail, hide_index=True, width="stretch")
+        if detail:
+            st.download_button("导出录入明细（CSV）", pd.DataFrame(detail).to_csv(index=False).encode("utf-8-sig"),
+                               file_name=f"P14-录入记录-{timestamp()[:10]}.csv", mime="text/csv")
+        st.markdown("**其他账号的录入动作**")
+        try:
+            events = audit.recent(limit=500)
+        except Exception:
+            events = []
+        entry_actions = ("确认字段映射", "建立对账任务", "加载合成演示", "导入对账包", "从云端共享载入")
+        history = [{"时间": display_time(event.get("at")), "账号": event.get("actor", ""),
+                    "操作": event.get("action", ""), "说明": event.get("detail", "")}
+                   for event in events if event.get("action") in entry_actions]
+        if history:
+            st.dataframe(history[:30], hide_index=True, width="stretch")
+        else:
+            st.caption("还没有可展示的录入动作记录。")
+
 elif page == "AI 辅助与记录":
     st.subheader("AI 服务状态")
     _page_ai = ai_info()
@@ -917,7 +1016,7 @@ elif page == "AI 辅助与记录":
 
 else:
     st.subheader("数据存放与共享")
-    st.caption(f"导入与复核共用一个对账工作区（当前设备标识 {_device}）：导入账号建立的任务，复核账号登录后直接看到同一份结果与复核记录。")
+    st.caption(f"各角色共用一个对账工作区（当前设备标识 {_device}）：导入账号建立的任务，复核与「录入+复核」账号登录后直接看到同一份结果与复核记录。")
     if not task:
         st.caption("当前没有任务；请由导入账号导入对账数据并运行规则对账。")
     if not can_import:
@@ -987,6 +1086,7 @@ else:
 if page == "用户与权限":
     st.subheader("用户与权限管理")
     st.caption("「导入」账号只能导入表格并建立对账；「复核」账号只查看结果并提交复核结论，不能修改数据；"
+               "「录入+复核」账号两者都能做，并可查看其他账号的录入记录，但没有账号管理权限；"
                "管理员拥有全部权限。旧账号角色显示「未分配」时，需在这里指定后才能进入工作台。"
                "下方「操作记录」按账号列出它做过的每一步。")
     users = auth.users()

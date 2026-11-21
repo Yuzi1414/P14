@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 from reconcile.audit import AuditStore
@@ -62,3 +63,73 @@ def test_login_demo_review_and_navigation(tmp_path, monkeypatch):
     assert "加载合成演示" in actions
     assert "提交复核结论" in actions
     assert all(event["actor"] == "admin" for event in AuditStore(tmp_path / "audit.db").recent(50))
+
+
+def test_auth_combined_role(tmp_path):
+    store = AuthStore(tmp_path / "users.json")
+    store.register("combo", "pw1234", "录入复核")
+    assert store.find("combo")["role"] == "录入复核"
+    store.set_role("combo", "复核")
+    assert store.find("combo")["role"] == "复核"
+    with pytest.raises(ValueError):
+        store.register("other", "pw1234", "管理员")
+
+
+def test_stale_auth_module_roles_are_reloaded(tmp_path, monkeypatch):
+    """模拟线上仍在运行的旧进程：认证模块缓存了旧角色清单时，注册页也要出现新角色。"""
+    import reconcile.storage as storage
+    import reconcile.auth as auth_mod
+    import reconcile.audit as audit_mod
+    import reconcile.ai as ai
+    monkeypatch.setattr(storage, "Store", lambda path: Store(tmp_path / "ui.db"))
+    monkeypatch.setattr(auth_mod, "build_auth", lambda path: AuthStore(tmp_path / "users.json"))
+    monkeypatch.setattr(audit_mod, "build_audit", lambda path: AuditStore(tmp_path / "audit.db"))
+    monkeypatch.setattr(ai.LocalAI, "health", lambda self: False)
+    monkeypatch.setattr(auth_mod, "USER_ROLES", ("导入", "复核"))
+    path = Path(__file__).resolve().parents[1] / "app.py"
+    app = AppTest.from_file(str(path), default_timeout=20).run()
+    assert not app.exception
+    role_radio = next(radio for radio in app.radio if radio.label == "注册角色")
+    assert "录入复核" in role_radio.options
+
+
+def test_combined_role_can_import_review_and_see_entries(tmp_path, monkeypatch):
+    import reconcile.storage as storage
+    import reconcile.auth as auth_mod
+    import reconcile.audit as audit_mod
+    import reconcile.ai as ai
+    monkeypatch.setattr(storage, "Store", lambda path: Store(tmp_path / "ui.db"))
+    users = tmp_path / "users.json"
+    AuthStore(users).register("combo", "combo123", "录入复核")
+    monkeypatch.setattr(auth_mod, "build_auth", lambda path: AuthStore(users))
+    monkeypatch.setattr(audit_mod, "build_audit", lambda path: AuditStore(tmp_path / "audit.db"))
+    monkeypatch.setattr(ai.LocalAI, "health", lambda self: False)
+    path = Path(__file__).resolve().parents[1] / "app.py"
+    app = AppTest.from_file(str(path), default_timeout=20).run()
+    assert not app.exception
+
+    app.text_input[0].set_value("combo")
+    app.text_input[1].set_value("combo123")
+    next(b for b in app.button if b.label.startswith("登录")).click().run()
+    assert not app.exception
+    options = app.sidebar.radio[0].options
+    # 录入 + 复核两侧页面都在，录入记录可查看他人录入；但没有用户与权限页
+    assert {"导入与字段确认", "结果与人工复核", "录入记录", "AI 辅助与记录"} <= set(options)
+    assert "用户与权限" not in options
+
+    # 既能录入（加载演示、建任务），也能提交复核结论
+    next(b for b in app.button if b.label == "加载合成演示并运行对账").click().run()
+    assert not app.exception
+    app.sidebar.radio[0].set_value("结果与人工复核").run()
+    next(b for b in app.button if b.label == "保存复核结论").click().run()
+    assert not app.exception
+    assert any(r["actor"] == "combo" for r in app.session_state["task"].reviews)
+
+    # 录入记录页汇总各账号的录入批次与明细
+    app.sidebar.radio[0].set_value("录入记录").run()
+    assert not app.exception
+    batches = app.dataframe[0].value
+    assert {"来源", "文件", "工作表", "记录数", "确认人", "确认时间"} <= set(batches.columns)
+    assert int(batches["记录数"].sum()) == len(app.session_state["task"].records)
+    detail = app.dataframe[1].value
+    assert "录入人" in detail.columns
