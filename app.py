@@ -131,6 +131,45 @@ auth = build_auth(ROOT / "runtime" / "users.json")
 audit = build_audit(ROOT / "runtime" / "audit.db")
 
 
+def cloud_status_rows():
+    """云端存储需要的三条环境变量是否已设置。
+
+    只报「已设置 / 未设置」，绝不回显变量内容——SESSION_SECRET 和 service_role
+    key 都是拿到就能冒充身份的凭证。
+    """
+    return [
+        {"变量": name, "用途": purpose,
+         "状态": "已设置" if (os.getenv(name) or "").strip() else "未设置"}
+        for name, purpose in (
+            ("SUPABASE_URL", "Supabase 项目地址（账号、任务、共享空间都靠它）"),
+            ("SUPABASE_KEY", "service_role 密钥，服务端写库用"),
+            ("SESSION_SECRET", "登录令牌签名，缺了每次重启都要重新登录"),
+        )
+    ]
+
+
+def cloud_config_problem():
+    """两条 Supabase 变量都在时做一次格式校验；返回中文原因，没问题返回空串。"""
+    url = (os.getenv("SUPABASE_URL") or "").strip()
+    key = (os.getenv("SUPABASE_KEY") or "").strip()
+    if not (url and key):
+        return ""
+    try:
+        auth_module.clean_supabase_config(url, key)
+    except RuntimeError as exc:
+        return str(exc)
+    return ""
+
+
+def share_stamp(target):
+    """共享空间的最后写入时间；读不到就返回空串，不影响页面其它部分。"""
+    try:
+        row = target.meta() or {}
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return display_time(row.get("updated_at", ""))
+
+
 def _audit_add(user, action, detail="", page_name="", task=""):
     try:
         audit.add((user or {}).get("username", ""), (user or {}).get("role", ""),
@@ -677,7 +716,11 @@ with st.sidebar:
     st.caption(f"本设备工作区 · 设备标识 {_device}\n\n数据默认只在本设备可见；发布到共享空间后其他账号/设备可载入")
     _auth_backend = "Supabase 云端" if getattr(auth, "backend", "local") == "supabase" else "本地文件"
     _task_backend = "Supabase 云端" if getattr(store, "backend", "local") == "supabase" else "本机文件"
-    st.caption(f"账户存储：{_auth_backend}\n\n任务存储：{_task_backend}")
+    _shared_backend = "Supabase 云端" if getattr(shared_store, "backend", "local") == "supabase" else "本机文件"
+    st.caption(f"账户存储：{_auth_backend}\n\n任务存储：{_task_backend}\n\n共享空间：{_shared_backend}")
+    if _shared_backend != "Supabase 云端":
+        st.caption("共享空间还没上云：重启或重新部署后会被清空，别人可能载入不到。"
+                   "「交付与说明」页有配置检查。")
     # 本地 AI 这一段统一显示为「本地AI引擎：已就绪」；云端仍按真实连接状态显示。
     if _ai["provider_label"] == "本地AI":
         st.markdown("本地AI引擎：已就绪", unsafe_allow_html=True)
@@ -1009,11 +1052,54 @@ elif page == "AI 辅助与记录":
 
 else:
     st.subheader("数据存放与共享")
+    _auth_cloud = getattr(auth, "backend", "local") == "supabase"
     _cloud_tasks = getattr(store, "backend", "local") == "supabase"
+    _shared_cloud = getattr(shared_store, "backend", "local") == "supabase"
     _where = "云端" if _cloud_tasks else "本机"
     st.caption(f"本设备任务按账号 + 设备隔离（设备标识 {_device}）。{_where}共享空间是全局的："
-               "任何账号发布后，其他账号、其他设备都能「从共享载入」查看。"
-               + ("" if _cloud_tasks else "当前是本机存储，共享只在这台电脑生效；跨设备请使用线上地址。"))
+               "任何账号发布后，其他账号、其他设备都能「从共享载入」查看。")
+    st.table([
+        {"项目": "账户（注册 / 登录 / 角色）", "存放位置": "Supabase 云端" if _auth_cloud else "本机文件",
+         "重启或重新部署后": "保留" if _auth_cloud else "清空，账号要重新注册"},
+        {"项目": "本设备任务（当前对账数据）", "存放位置": "Supabase 云端" if _cloud_tasks else "本机文件",
+         "重启或重新部署后": "保留" if _cloud_tasks else "清空，要重新导入 Excel"},
+        {"项目": "共享空间（发布 / 载入用）", "存放位置": "Supabase 云端" if _shared_cloud else "本机文件",
+         "重启或重新部署后": "保留" if _shared_cloud else "清空，别人载入不到"},
+    ])
+    if _auth_cloud and _cloud_tasks and _shared_cloud:
+        st.success("账户、任务和共享空间都在 Supabase 云端：重启、重新部署都不丢。"
+                   "别人登录后点「从云端共享载入」就能看到你发布的数据。")
+        if st.button("测试云端连接", key="cloud_ping"):
+            _fails = []
+            for _label, _target in (("账户", auth), ("任务", store), ("共享空间", shared_store)):
+                try:
+                    _target.ping()
+                except (OSError, ValueError, AttributeError) as exc:
+                    _fails.append(f"{_label}：{exc}")
+            if _fails:
+                st.error("云端连接失败：\n\n" + "\n\n".join(_fails))
+            else:
+                st.success("云端连接正常：账户、任务和共享空间三处都能读写。")
+    else:
+        st.error("上面标「本机文件」的项目写在容器临时磁盘上：Render 免费实例休眠、重启或重新部署后会被清空，"
+                 "别人也可能载入不到你发布的数据。这就是「发布到本机共享」和「发布到云端共享」的区别。")
+        with st.expander("查看配置状态 / 开启云端存储（约 5 分钟）"):
+            st.table(cloud_status_rows())
+            _problem = cloud_config_problem()
+            if _problem:
+                st.warning(f"现有配置格式有问题：{_problem}")
+            st.markdown(
+                "1. 在 [Supabase](https://supabase.com) 新建项目（Free 即可），"
+                "SQL Editor 里执行 `docs/supabase_setup.sql` 全文（可重复执行，不会破坏已有表）。\n"
+                "2. Render 控制台 → 选中 `p14-reconcile` → Environment → Add Environment Variable，"
+                "加上 `SUPABASE_URL`（项目地址）和 `SUPABASE_KEY`（service_role 密钥，不要外传），"
+                "建议同时加 `SESSION_SECRET`（随机 64 位十六进制，否则每次重启都要重新登录）。\n"
+                "3. 保存后 Render 会自动重新部署（2–3 分钟）。回到本页，上面表格变成「Supabase 云端」，"
+                "再点「测试云端连接」确认。\n\n"
+                "⚠ 切换前注意：容器里的旧账号和旧对账数据**不会**自动迁到云端，"
+                "切换后需要重新注册账号（管理员会重置为 `admin` / `admin123`）并重新导入 Excel，大约 5 分钟。\n\n"
+                "详细图文步骤见 `docs/线上账号持久化配置.md`。"
+            )
     try:
         _shared_now = shared_store.load()
         _shared_err = ""
@@ -1022,9 +1108,11 @@ else:
     if _shared_err:
         st.warning(f"共享空间读取失败：{_shared_err}")
     elif _shared_now is not None:
-        st.caption(f"共享空间现有任务：{_shared_now.name} · {len(_shared_now.records)} 条记录")
+        _stamp = share_stamp(shared_store)
+        st.caption(f"共享空间现有任务：{_shared_now.name} · {len(_shared_now.records)} 条记录"
+                   + (f" · 最后上传 {_stamp}" if _stamp else ""))
     else:
-        st.caption("共享空间当前为空。")
+        st.caption("共享空间当前为空：先点下面的「发布到…共享」，别人才能在「从…共享载入」里看到。")
     if can_manage and not task:
         with st.expander("恢复升级前的共享数据"):
             st.caption("升级前的任务放在一个全局共享工作区里。这里可以把它复制到当前设备一次；"
@@ -1052,24 +1140,44 @@ else:
     c_share, c_load = st.columns(2)
     if can_import:
         if c_share.button(f"发布到{_where}共享", use_container_width=True, disabled=task is None,
-                          help=f"把当前任务复制到全局{_where}共享空间，所有账号/设备可见"):
-            shared_store.save(task)
-            log_action(f"发布到{_where}共享", f"任务「{task.name}」")
-            st.success(f"已发布到{_where}共享（{timestamp()}）。其他账号/设备现在可以载入。")
+                          help=f"把当前任务整份复制到全局{_where}共享空间，所有账号/设备都能载入"):
+            try:
+                shared_store.save(task)
+                # 写完立刻读回来对一遍：名称和记录数一致才算真的传上去了。
+                echo = shared_store.load()
+            except (OSError, ValueError) as exc:
+                st.error(f"上传失败：{exc}")
+            else:
+                if echo is None or echo.name != task.name or len(echo.records) != len(task.records):
+                    st.error("已写入，但读回来核对不一致（任务名或记录数对不上）。请再点一次；"
+                             "仍失败说明云端存储有问题，先别让对方载入。")
+                else:
+                    _stamp = share_stamp(shared_store)
+                    log_action(f"发布到{_where}共享", f"任务「{task.name}」· {len(task.records)} 条记录")
+                    st.success(f"已上传「{task.name}」：{len(task.records)} 条记录，读回核对一致"
+                               + (f" · {_stamp}" if _stamp else "。"))
+                    st.caption("让对方登录后打开「交付与说明」→「从云端共享载入」即可看到这份数据。")
     else:
         c_share.caption("当前角色不能发布共享。")
     if c_load.button(f"从{_where}共享载入", use_container_width=True,
-                     help="用全局共享空间的最新任务覆盖当前设备的工作区"):
+                     help="用全局共享空间的最新任务覆盖当前设备的工作区；本设备现有任务会被替换"):
         if _shared_now is None:
-            st.info(f"{_where}共享空间还是空的：先由导入/录入+复核账号点「发布到{_where}共享」。")
+            if _shared_err:
+                st.error(f"载入失败：{_shared_err}")
+            else:
+                st.info(f"{_where}共享空间还是空的：先由导入/录入+复核账号点「发布到{_where}共享」。")
         else:
-            store.save(_shared_now)
-            st.session_state.task = _shared_now
-            for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
-                st.session_state.pop(key, None)
-            log_action(f"从{_where}共享载入", f"任务「{_shared_now.name}」")
-            st.success(f"已载入共享任务：{_shared_now.name}")
-            st.rerun()
+            try:
+                store.save(_shared_now)
+            except (OSError, ValueError) as exc:
+                st.error(f"载入失败：{exc}")
+            else:
+                st.session_state.task = _shared_now
+                for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
+                    st.session_state.pop(key, None)
+                log_action(f"从{_where}共享载入", f"任务「{_shared_now.name}」")
+                st.success(f"已载入共享任务：{_shared_now.name}（{len(_shared_now.records)} 条记录）")
+                st.rerun()
 
     st.markdown("**手动迁移：对账包**")
     st.caption("导出的文件保存在你自己的电脑上；换电脑时用导入恢复，这条通道不经过服务器自动同步。")
