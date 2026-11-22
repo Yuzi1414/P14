@@ -58,22 +58,6 @@ class Store:
             db.execute("CREATE TABLE IF NOT EXISTS current_task (slot INTEGER PRIMARY KEY CHECK(slot=1), schema_version INTEGER NOT NULL, payload TEXT NOT NULL)")
             db.execute("INSERT INTO current_task VALUES (1,1,?) ON CONFLICT(slot) DO UPDATE SET schema_version=1,payload=excluded.payload", (payload,))
 
-    def ping(self):
-        """连通自检：确认这个库现在真的能读写。界面上「测试云端连接」会调用。"""
-        with self.connect() as db:
-            db.execute("SELECT 1").fetchone()
-        return True
-
-    def meta(self):
-        """最后写入时间。本地库没有 updated_at 列，用文件修改时间代替。"""
-        try:
-            moment = datetime.fromtimestamp(
-                self.path.stat().st_mtime, timezone(timedelta(hours=8))
-            )
-        except OSError:
-            return None
-        return {"updated_at": moment.isoformat(timespec="seconds")}
-
     def load(self):
         # 文件或目录可能已被 clear() 删除（账号注销后），此时视为空库
         if not self.path.exists():
@@ -134,21 +118,6 @@ class SupabaseStore:
             },
             headers={"Prefer": "resolution=merge-duplicates,return=representation"},
         )
-
-    def ping(self):
-        """连通自检：能读到 app_tasks 就说明 URL、key 和建表都对了。"""
-        self._request("GET", params={"select": "task_key", "limit": "1"})
-        return True
-
-    def meta(self):
-        """这条任务在云端的最后写入时间，用于确认「对方看到的是不是最新一版」。"""
-        rows = self._request(
-            "GET",
-            params={"select": "updated_at", "task_key": f"eq.{self.task_key}", "limit": "1"},
-        )
-        if not rows:
-            return None
-        return {"updated_at": str(rows[0].get("updated_at") or "")}
 
     def load(self):
         rows = self._request(

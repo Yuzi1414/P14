@@ -178,11 +178,6 @@ class SupabaseAuth:
         rows = self._request("GET", params={"select": "*", "order": "created_at.asc"})
         return [dict(r) for r in rows]
 
-    def ping(self):
-        """连通自检：能读到账号表就说明 URL、key 和建表都对了。"""
-        self._request("GET", params={"select": "username", "limit": "1"})
-        return True
-
     def find(self, username):
         key = (username or "").strip().lower()
         if not key:
@@ -344,10 +339,6 @@ class AuthStore:
     # ---- queries ----
     def users(self):
         return [dict(u) for u in self._data["users"]]
-
-    def ping(self):
-        """本地文件存储没有远端可连，直接当作可用。"""
-        return True
 
     def find(self, username):
         key = (username or "").strip().lower()
