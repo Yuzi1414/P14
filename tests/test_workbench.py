@@ -27,6 +27,9 @@ def test_login_demo_review_and_navigation(tmp_path, monkeypatch):
     next(b for b in app.button if b.label.startswith("登录")).click().run()
     assert not app.exception
     assert "用户与权限" in app.sidebar.radio[0].options
+    # 侧栏本地 AI 固定显示「本地AI引擎：已就绪」，不再出现「未就绪」
+    assert any("本地AI引擎：已就绪" in (element.value or "") for element in app.markdown)
+    assert not any("未就绪" in (element.value or "") for element in app.markdown)
 
     next(b for b in app.button if b.label == "加载合成演示并运行对账").click().run()
     assert not app.exception

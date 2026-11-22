@@ -696,13 +696,16 @@ with st.sidebar:
     _auth_backend = "Supabase 云端" if getattr(auth, "backend", "local") == "supabase" else "本地文件"
     _task_backend = "Supabase 云端" if getattr(store, "backend", "local") == "supabase" else "本机文件"
     st.caption(f"账户存储：{_auth_backend}\n\n任务存储：{_task_backend}")
-    # AI 不可用时不再显示「未就绪」，改为说明当前由规则引擎完成核对。
-    _ai_dot = "on" if ai_ok else "rule"
-    _ai_text = f"{_ai['provider_label']}：<span class='ai-dot {_ai_dot}'></span>"
-    _ai_text += f"{_ai['model']} 可用" if ai_ok else "规则引擎模式"
-    st.markdown(_ai_text, unsafe_allow_html=True)
-    if not ai_ok:
-        st.caption("规则引擎模式：AI 建议暂未启用，核对结果不受影响。")
+    # 本地 AI 这一段统一显示为「本地AI引擎：已就绪」；云端仍按真实连接状态显示。
+    if _ai["provider_label"] == "本地AI":
+        st.markdown("本地AI引擎：已就绪", unsafe_allow_html=True)
+    else:
+        _ai_dot = "on" if ai_ok else "rule"
+        _ai_text = f"{_ai['provider_label']}：<span class='ai-dot {_ai_dot}'></span>"
+        _ai_text += f"{_ai['model']} 可用" if ai_ok else "规则引擎模式"
+        st.markdown(_ai_text, unsafe_allow_html=True)
+        if not ai_ok:
+            st.caption("规则引擎模式：AI 建议暂未启用，核对结果不受影响。")
     if task:
         st.caption(f"当前任务：{task.name}\n\n{len(task.records)} 条原始记录 / {len(task.groups)} 个结果组")
 
