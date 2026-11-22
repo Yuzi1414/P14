@@ -1011,10 +1011,10 @@ else:
     st.subheader("数据存放与共享")
     st.caption(f"任务按账号 + 设备隔离（当前设备标识 {_device}）：本设备导入的数据默认只有本设备可见；"
                "换设备时先在原设备「发布到云端共享」，再到新设备登录同一账号并「从云端共享载入」。")
-    if can_import and not task:
+    if can_manage and not task:
         with st.expander("恢复升级前的共享数据"):
             st.caption("升级前的任务放在一个全局共享工作区里。这里可以把它复制到当前设备一次；"
-                       "不会删除旧数据，也不会自动同步给其他设备。")
+                       "不会删除旧数据，也不会自动同步给其他设备。仅管理员可操作。")
             if st.button("把旧共享工作区复制到本设备"):
                 try:
                     _legacy = build_store(ROOT / "runtime" / "tasks" / "workspace.db", "workspace").load()
