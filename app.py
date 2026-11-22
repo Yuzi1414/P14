@@ -79,6 +79,7 @@ h3 {font-size:1.15rem !important; font-weight:650 !important;}
 .ai-dot {display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle;}
 .ai-dot.on {background:#3DD68C; box-shadow:0 0 0 3px rgba(61,214,140,.18);}
 .ai-dot.off {background:#E05548; box-shadow:0 0 0 3px rgba(224,85,72,.18);}
+.ai-dot.rule {background:#E0A458; box-shadow:0 0 0 3px rgba(224,164,88,.18);}
 
 /* ===== Main surface / components ===== */
 [data-testid='stDataFrame'] {border:1px solid #E2E7E0; border-radius:14px; overflow:hidden; box-shadow:0 1px 2px rgba(22,38,31,.04),0 4px 14px rgba(22,38,31,.05);}
@@ -695,9 +696,13 @@ with st.sidebar:
     _auth_backend = "Supabase 云端" if getattr(auth, "backend", "local") == "supabase" else "本地文件"
     _task_backend = "Supabase 云端" if getattr(store, "backend", "local") == "supabase" else "本机文件"
     st.caption(f"账户存储：{_auth_backend}\n\n任务存储：{_task_backend}")
-    st.markdown(f"{_ai['provider_label']}：<span class='ai-dot {'on' if ai_ok else 'off'}'></span>{_ai['model']} {'可用' if ai_ok else '未就绪'}", unsafe_allow_html=True)
+    # AI 不可用时不再显示「未就绪」，改为说明当前由规则引擎完成核对。
+    _ai_dot = "on" if ai_ok else "rule"
+    _ai_text = f"{_ai['provider_label']}：<span class='ai-dot {_ai_dot}'></span>"
+    _ai_text += f"{_ai['model']} 可用" if ai_ok else "规则引擎模式"
+    st.markdown(_ai_text, unsafe_allow_html=True)
     if not ai_ok:
-        st.caption(_ai["hint"])
+        st.caption("规则引擎模式：AI 建议暂未启用，核对结果不受影响。")
     if task:
         st.caption(f"当前任务：{task.name}\n\n{len(task.records)} 条原始记录 / {len(task.groups)} 个结果组")
 
