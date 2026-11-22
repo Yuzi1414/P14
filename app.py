@@ -435,8 +435,8 @@ def ai_info():
 
 
 # 任务默认按「账号 + 设备」隔离：本设备导入的数据默认只有本设备可见。
-# 换设备或换账号不会自动看到别人的结果；需要同步时先「发布到云端共享」，
-# 再到另一台设备（同一账号）点「从云端共享载入」。
+# 换设备或换账号不会自动看到别人的结果；需要同步时由导入账号「发布到云端共享」，
+# 其他账号/设备再点「从云端共享载入」即可查看同一份任务。
 _uname = current_user["username"]
 _slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", _uname).strip("_") or "user"
 _tag = hashlib.sha256(_uname.encode("utf-8")).hexdigest()[:8]
@@ -445,8 +445,9 @@ _task_key = f"{_slug}_{_tag}_{_device}"
 task_db_path = ROOT / "runtime" / "tasks" / f"{_task_key}.db"
 store = build_store(task_db_path, _task_key)
 
-# 共享空间：显式发布才写入，只有本账号的其它设备可以载入；默认不参与同步
-shared_store = build_store(ROOT / "runtime" / "shared" / f"{_slug}_{_tag}.db", f"{_slug}_{_tag}_shared")
+# 全局共享空间：显式发布才写入，任何账号/设备都可以「从云端共享载入」查看。
+# 不按账号分库，发布后所有账号看到的是同一份；未发布时各设备仍只看自己的任务。
+shared_store = build_store(ROOT / "runtime" / "shared" / "shared_global.db", "shared_global")
 if "task" not in st.session_state:
     try:
         st.session_state.task = store.load()
@@ -663,7 +664,6 @@ with st.sidebar:
                                 build_store(task_db_path, _dev_key).clear()
                         else:
                             store.clear()
-                            shared_store.clear()
                     except (OSError, ValueError):
                         pass
                     _clear_login()
@@ -674,7 +674,7 @@ with st.sidebar:
     st.divider()
     st.markdown("**运行边界**")
     st.caption("演示规则 demo-1.0 · 未经财务确认")
-    st.caption(f"本设备工作区 · 设备标识 {_device}\n\n数据默认只在本设备可见；发布到云端共享后其它设备才能载入")
+    st.caption(f"本设备工作区 · 设备标识 {_device}\n\n数据默认只在本设备可见；发布到共享空间后其他账号/设备可载入")
     _auth_backend = "Supabase 云端" if getattr(auth, "backend", "local") == "supabase" else "本地文件"
     _task_backend = "Supabase 云端" if getattr(store, "backend", "local") == "supabase" else "本机文件"
     st.caption(f"账户存储：{_auth_backend}\n\n任务存储：{_task_backend}")
@@ -1011,9 +1011,9 @@ else:
     st.subheader("数据存放与共享")
     _cloud_tasks = getattr(store, "backend", "local") == "supabase"
     _where = "云端" if _cloud_tasks else "本机"
-    st.caption(f"任务按账号 + 设备隔离（当前设备标识 {_device}）。共享空间归属账号「{current_user['username']}」· {_where}存储。"
-               + ("另一台设备必须登录同一账号才能载入。" if _cloud_tasks
-                  else "当前是本机存储，共享只在这台电脑生效；要跨设备共享请使用线上地址。"))
+    st.caption(f"本设备任务按账号 + 设备隔离（设备标识 {_device}）。{_where}共享空间是全局的："
+               "任何账号发布后，其他账号、其他设备都能「从共享载入」查看。"
+               + ("" if _cloud_tasks else "当前是本机存储，共享只在这台电脑生效；跨设备请使用线上地址。"))
     try:
         _shared_now = shared_store.load()
         _shared_err = ""
@@ -1048,26 +1048,28 @@ else:
     if not task:
         st.caption("当前设备没有任务；请由导入账号导入对账数据并运行规则对账。")
     if not can_import:
-        st.info("复核账号只读：不能发布、载入或导入对账数据，以免覆盖导入账号建立的结果。下方可正常导出查看。")
+        st.info("复核账号只读：不能导入或发布，但可以「从共享载入」查看已发布的任务；下方可正常导出。")
+    c_share, c_load = st.columns(2)
     if can_import:
-        c_share, c_load = st.columns(2)
         if c_share.button(f"发布到{_where}共享", use_container_width=True, disabled=task is None,
-                          help=f"把当前任务复制到本账号的{_where}共享空间"):
+                          help=f"把当前任务复制到全局{_where}共享空间，所有账号/设备可见"):
             shared_store.save(task)
             log_action(f"发布到{_where}共享", f"任务「{task.name}」")
-            st.success(f"已发布到{_where}共享（{timestamp()}）。")
-        if c_load.button(f"从{_where}共享载入", use_container_width=True,
-                         help="用共享空间的最新任务覆盖当前工作区的任务"):
-            if _shared_now is None:
-                st.info(f"{_where}共享空间还是空的：先在另一台设备（同一账号）点「发布到{_where}共享」。")
-            else:
-                store.save(_shared_now)
-                st.session_state.task = _shared_now
-                for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
-                    st.session_state.pop(key, None)
-                log_action(f"从{_where}共享载入", f"任务「{_shared_now.name}」")
-                st.success(f"已载入共享任务：{_shared_now.name}")
-                st.rerun()
+            st.success(f"已发布到{_where}共享（{timestamp()}）。其他账号/设备现在可以载入。")
+    else:
+        c_share.caption("当前角色不能发布共享。")
+    if c_load.button(f"从{_where}共享载入", use_container_width=True,
+                     help="用全局共享空间的最新任务覆盖当前设备的工作区"):
+        if _shared_now is None:
+            st.info(f"{_where}共享空间还是空的：先由导入/录入+复核账号点「发布到{_where}共享」。")
+        else:
+            store.save(_shared_now)
+            st.session_state.task = _shared_now
+            for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
+                st.session_state.pop(key, None)
+            log_action(f"从{_where}共享载入", f"任务「{_shared_now.name}」")
+            st.success(f"已载入共享任务：{_shared_now.name}")
+            st.rerun()
 
     st.markdown("**手动迁移：对账包**")
     st.caption("导出的文件保存在你自己的电脑上；换电脑时用导入恢复，这条通道不经过服务器自动同步。")
