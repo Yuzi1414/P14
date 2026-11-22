@@ -7,7 +7,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,7 +24,7 @@ from reconcile.exporter import group_rows, money, record_rows, workbook_bytes
 from reconcile.importer import fingerprint, normalize, read_sheet, sheet_names, suggest_mapping
 from reconcile.models import FIELDS, SOURCES, Task
 from reconcile.service import accept_candidate, create_task, record_review
-from reconcile.storage import Store, build_store, review_status, timestamp
+from reconcile.storage import build_store, review_status, timestamp
 
 # 线上进程可能一直在运行：Streamlit 会重新执行本文件，但已导入的 reconcile.auth
 # 有时仍缓存旧的角色清单，注册页就会少一个角色。发现清单落后时重新载入该模块，
@@ -435,36 +434,16 @@ def ai_info():
     return ai_runtime.status()
 
 
-# 角色拆成「导入 / 复核 / 录入+复核」后，各角色必须看到同一份对账数据：导入建立任务，复核在其中提交结论。
-# 因此任务库改为共享工作区（不再按账号+设备各存一份），账号只决定能进入哪些页面。
+# 任务默认按「账号 + 设备」隔离：本设备导入的数据默认只有本设备可见。
+# 换设备或换账号不会自动看到别人的结果；需要同步时先「发布到云端共享」，
+# 再到另一台设备（同一账号）点「从云端共享载入」。
 _uname = current_user["username"]
 _slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", _uname).strip("_") or "user"
 _tag = hashlib.sha256(_uname.encode("utf-8")).hexdigest()[:8]
 _device = _device_id()
-_task_key = "workspace"
-task_db_path = ROOT / "runtime" / "tasks" / "workspace.db"
+_task_key = f"{_slug}_{_tag}_{_device}"
+task_db_path = ROOT / "runtime" / "tasks" / f"{_task_key}.db"
 store = build_store(task_db_path, _task_key)
-# 兼容改造前的按账号/设备分库：共享工作区里还没有任务时，把当前账号原有任务复制进来，避免数据凭空消失。
-# 这里判断的是「有没有任务」而不是「文件在不在」——空库文件在首次访问时就会被创建出来。
-if getattr(store, "backend", "local") == "local":
-    try:
-        _ws_empty = store.load() is None
-    except (ValueError, OSError):
-        _ws_empty = False
-    if _ws_empty:
-        _old_dir = ROOT / "runtime" / "tasks" / f"{_slug}_{_tag}"
-        _candidates = sorted(_old_dir.glob("*.db"), key=lambda p: p.stat().st_mtime, reverse=True) if _old_dir.exists() else []
-        _flat = ROOT / "runtime" / "tasks" / f"{_slug}_{_tag}.db"
-        if _flat.exists():
-            _candidates.append(_flat)
-        for _old_db in _candidates:
-            try:
-                if Store(_old_db).load() is None:
-                    continue
-                shutil.copy2(_old_db, task_db_path)
-                break
-            except (ValueError, OSError):
-                continue
 
 # 共享空间：显式发布才写入，只有本账号的其它设备可以载入；默认不参与同步
 shared_store = build_store(ROOT / "runtime" / "shared" / f"{_slug}_{_tag}.db", f"{_slug}_{_tag}_shared")
@@ -549,7 +528,7 @@ def group_label(group):
 def entry_rows(task):
     """按导入批次汇总录入情况：哪份文件由谁在什么时间确认导入、一共多少条记录。
 
-    「录入记录」页用它展示共享工作区里各账号的录入结果，而不只是当前账号自己的。
+    「录入记录」页用它展示本设备当前任务里各导入批次的录入情况。
     老任务或单独导入的数据没有 mappings，则按记录中的文件与工作表补一行，避免漏掉。
     """
     batches = {}
@@ -677,11 +656,14 @@ with st.sidebar:
                     auth.delete_account(current_user["username"], del_pw)
                     log_action("注销账号", "本人注销")
                     try:
-                        # 对账数据属于共享工作区（导入与复核共用），注销个人账号时不清空；
-                        # 只清理改造前遗留在云端、属于本账号的旧分库副本。
+                        # 任务按账号+设备隔离：注销时清理本账号在云端的各设备分库；
+                        # 本地后端至少清掉当前设备这份，避免账号删除后数据留在磁盘上。
                         if getattr(store, "backend", "local") == "supabase":
                             for _dev_key in _all_task_keys(_slug, _tag):
                                 build_store(task_db_path, _dev_key).clear()
+                        else:
+                            store.clear()
+                            shared_store.clear()
                     except (OSError, ValueError):
                         pass
                     _clear_login()
@@ -692,7 +674,7 @@ with st.sidebar:
     st.divider()
     st.markdown("**运行边界**")
     st.caption("演示规则 demo-1.0 · 未经财务确认")
-    st.caption(f"共享对账工作区 · 设备标识 {_device}\n\n各角色共用同一份对账数据")
+    st.caption(f"本设备工作区 · 设备标识 {_device}\n\n数据默认只在本设备可见；发布到云端共享后其它设备才能载入")
     _auth_backend = "Supabase 云端" if getattr(auth, "backend", "local") == "supabase" else "本地文件"
     _task_backend = "Supabase 云端" if getattr(store, "backend", "local") == "supabase" else "本机文件"
     st.caption(f"账户存储：{_auth_backend}\n\n任务存储：{_task_backend}")
@@ -945,11 +927,11 @@ elif page == "结果与人工复核":
         st.download_button("导出含复核记录的完整工作簿", workbook_bytes(task), "P14-对账结果.xlsx")
 
 elif page == "录入记录":
-    st.subheader("录入记录（全部账号）")
-    st.caption("共享工作区里每个导入批次的录入人、确认时间与记录数汇总在这里，可按录入人查看原始记录。"
-               "此页只对「录入+复核」和管理员开放；可以查看他人录入结果，但不能管理账号或修改角色。")
+    st.subheader("录入记录")
+    st.caption("本设备当前任务里每个导入批次的录入人、确认时间与记录数汇总在这里，可按录入人查看原始记录。"
+               "此页只对「录入+复核」和管理员开放；其它设备的数据默认看不到，需先「发布到云端共享 / 从云端共享载入」。")
     if not task:
-        st.info("当前还没有任务。由导入账号在「导入与字段确认」建立对账后，各账号的录入结果会汇总到这里。")
+        st.info("当前设备还没有任务。由导入账号在「导入与字段确认」建立对账后，录入记录会汇总到这里。")
     else:
         entries = entry_rows(task)
         people = [name for name in dict.fromkeys(row["确认人"] for row in entries) if name not in ("", "—")]
@@ -963,16 +945,16 @@ elif page == "录入记录":
         st.markdown("**按导入批次**")
         st.dataframe(entries, hide_index=True, width="stretch")
         st.markdown("**录入明细**")
-        who = st.selectbox("按录入人筛选", ["全部账号"] + people, key="entry_who")
+        who = st.selectbox("按录入人筛选", ["全部"] + people, key="entry_who")
         detail = with_importer(task, record_rows(task))
-        if who != "全部账号":
+        if who != "全部":
             detail = [row for row in detail if row["录入人"] == who]
-        st.caption(f"显示 {len(detail)} 条原始记录" + ("" if who == "全部账号" else f" · 录入人 {who}"))
+        st.caption(f"显示 {len(detail)} 条原始记录" + ("" if who == "全部" else f" · 录入人 {who}"))
         st.dataframe(detail, hide_index=True, width="stretch")
         if detail:
             st.download_button("导出录入明细（CSV）", pd.DataFrame(detail).to_csv(index=False).encode("utf-8-sig"),
                                file_name=f"P14-录入记录-{timestamp()[:10]}.csv", mime="text/csv")
-        st.markdown("**其他账号的录入动作**")
+        st.markdown("**本账号的录入动作**")
         try:
             events = audit.recent(limit=500)
         except Exception:
@@ -980,7 +962,8 @@ elif page == "录入记录":
         entry_actions = ("确认字段映射", "建立对账任务", "加载合成演示", "导入对账包", "从云端共享载入")
         history = [{"时间": display_time(event.get("at")), "账号": event.get("actor", ""),
                     "操作": event.get("action", ""), "说明": event.get("detail", "")}
-                   for event in events if event.get("action") in entry_actions]
+                   for event in events
+                   if event.get("action") in entry_actions and event.get("actor") == current_user["username"]]
         if history:
             st.dataframe(history[:30], hide_index=True, width="stretch")
         else:
@@ -1026,9 +1009,30 @@ elif page == "AI 辅助与记录":
 
 else:
     st.subheader("数据存放与共享")
-    st.caption(f"各角色共用一个对账工作区（当前设备标识 {_device}）：导入账号建立的任务，复核与「录入+复核」账号登录后直接看到同一份结果与复核记录。")
+    st.caption(f"任务按账号 + 设备隔离（当前设备标识 {_device}）：本设备导入的数据默认只有本设备可见；"
+               "换设备时先在原设备「发布到云端共享」，再到新设备登录同一账号并「从云端共享载入」。")
+    if can_import and not task:
+        with st.expander("恢复升级前的共享数据"):
+            st.caption("升级前的任务放在一个全局共享工作区里。这里可以把它复制到当前设备一次；"
+                       "不会删除旧数据，也不会自动同步给其他设备。")
+            if st.button("把旧共享工作区复制到本设备"):
+                try:
+                    _legacy = build_store(ROOT / "runtime" / "tasks" / "workspace.db", "workspace").load()
+                except (ValueError, OSError) as exc:
+                    st.error(f"旧数据读取失败：{exc}")
+                else:
+                    if _legacy is None:
+                        st.info("旧共享工作区里没有任务。")
+                    else:
+                        store.save(_legacy)
+                        st.session_state.task = _legacy
+                        for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
+                            st.session_state.pop(key, None)
+                        log_action("迁移旧共享工作区", f"任务「{_legacy.name}」")
+                        st.success(f"已复制到本设备：{_legacy.name}")
+                        st.rerun()
     if not task:
-        st.caption("当前没有任务；请由导入账号导入对账数据并运行规则对账。")
+        st.caption("当前设备没有任务；请由导入账号导入对账数据并运行规则对账。")
     if not can_import:
         st.info("复核账号只读：不能发布、载入或导入对账数据，以免覆盖导入账号建立的结果。下方可正常导出查看。")
     if can_import:
