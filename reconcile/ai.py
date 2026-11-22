@@ -94,7 +94,7 @@ class AIConfig:
     @property
     def provider_label(self):
         if self.local:
-            return "本地 Ollama"
+            return "本地AI"
         return "云端千问" if self.provider in ("qwen", "qwen3", "dashscope", "aliyun", "ali", "bailian") else "云端 API"
 
     @property
