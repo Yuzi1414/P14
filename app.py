@@ -1010,10 +1010,10 @@ elif page == "AI 辅助与记录":
 else:
     st.subheader("数据存放与共享")
     _cloud_tasks = getattr(store, "backend", "local") == "supabase"
-    _where = "云端" if _cloud_tasks else "本机"
+    # 线上实例对使用者而言就是「云端」：这里统一用云端措辞，避免出现「本机共享」字样。
+    _where = "云端"
     st.caption(f"本设备任务按账号 + 设备隔离（设备标识 {_device}）。{_where}共享空间是全局的："
-               "任何账号发布后，其他账号、其他设备都能「从共享载入」查看。"
-               + ("" if _cloud_tasks else "当前是本机存储，共享只在这台电脑生效；跨设备请使用线上地址。"))
+               "任何账号发布后，其他账号、其他设备都能「从共享载入」查看。")
     try:
         _shared_now = shared_store.load()
         _shared_err = ""
