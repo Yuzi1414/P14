@@ -988,6 +988,8 @@ elif page == "录入记录":
 
 elif page == "AI 辅助与记录":
     st.subheader("AI 服务状态")
+    # 每次进入该页都重新探测，避免沿用上一次（服务还没启动时）的缓存结果。
+    ai_info.clear()
     _page_ai = ai_info()
     if _page_ai["ok"]:
         st.success(_page_ai["hint"])
