@@ -3,7 +3,7 @@ import uuid
 from . import engine
 from .importer import mark_duplicates
 from .models import Task
-from .storage import timestamp
+from .storage import review_status, timestamp
 
 
 def create_task(records, name="合成演示任务", mappings=None):
@@ -33,6 +33,24 @@ def record_review(task, group_id, action, actor, note):
         raise ValueError("驳回时必须填写原因")
     task.reviews.append({"id": uuid.uuid4().hex, "group_id": group_id, "action": action,
                          "actor": actor.strip(), "note": note.strip(), "at": timestamp()})
+
+
+def confirm_all_matched(task, actor, note="一键确认全部已匹配组（未逐组填写备注）"):
+    """把所有「自动分类 = 已匹配」且还没复核的组，一次性记为人工确认。
+
+    只动已匹配：异常差异和未匹配仍须逐组判断；已确认 / 已驳回的组不会被改写。
+    每条记录仍按组写入 reviews，导出和「人工复核状态」列都能看到是谁、什么时候确认的。
+    返回本次确认的组数。
+    """
+    actor = (actor or "").strip()
+    if not actor:
+        raise ValueError("请先填写复核人")
+    pending = [g for g in task.groups
+               if g.status == "已匹配" and review_status(task, g.id) == "待复核"]
+    for group in pending:
+        task.reviews.append({"id": uuid.uuid4().hex, "group_id": group.id, "action": "确认",
+                             "actor": actor, "note": note, "at": timestamp(), "batch": True})
+    return len(pending)
 
 
 def accept_candidate(task, bank_id, candidate_id, relation, actor, note):

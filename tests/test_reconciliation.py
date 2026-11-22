@@ -13,7 +13,7 @@ from reconcile.engine import assert_coverage, candidate_records, run
 from reconcile.exporter import group_rows, workbook_bytes
 from reconcile.importer import fingerprint, normalize, parse_amount, parse_date, read_sheet, suggest_mapping
 from reconcile.models import Record
-from reconcile.service import accept_candidate, create_task, record_review
+from reconcile.service import accept_candidate, confirm_all_matched, create_task, record_review
 from reconcile.storage import Store, review_status
 
 
@@ -128,6 +128,47 @@ def test_review_persists_and_does_not_hide_difference(task, tmp_path):
     assert next(g for g in restored.groups if g.id == group.id).status == "异常差异"
     with pytest.raises(ValueError, match="原因"):
         record_review(restored, group.id, "驳回", "人", "")
+
+
+def _matched(task):
+    return [g for g in task.groups if g.status == "已匹配"]
+
+
+def test_batch_confirm_only_matched_and_pending(task):
+    """一键确认只处理「已匹配 + 待复核」，异常差异和未匹配保持原样。"""
+    assert len(_matched(task)) == 4
+    confirmed = confirm_all_matched(task, "演示复核员")
+    assert confirmed == 4
+    assert all(review_status(task, g.id) == "已确认" for g in _matched(task))
+    assert all(review_status(task, g.id) == "待复核" for g in task.groups if g.status != "已匹配")
+    # 再点一次不会重复写入
+    assert confirm_all_matched(task, "演示复核员") == 0
+    assert sum(item["action"] == "确认" for item in task.reviews) == 4
+    # 备注统一写清楚是批量确认，导出时能区分逐组确认
+    assert {item["note"] for item in task.reviews} == {"一键确认全部已匹配组（未逐组填写备注）"}
+    assert all(item["batch"] for item in task.reviews)
+
+
+def test_batch_confirm_keeps_rejected_groups(task):
+    """已驳回的已匹配组不会被批量确认覆盖。"""
+    rejected = _matched(task)[0]
+    record_review(task, rejected.id, "驳回", "复核员", "金额口径待财务确认")
+    assert confirm_all_matched(task, "复核员") == 3
+    assert review_status(task, rejected.id) == "已驳回"
+
+
+def test_batch_confirm_requires_actor(task):
+    with pytest.raises(ValueError, match="复核人"):
+        confirm_all_matched(task, "   ")
+
+
+def test_batch_confirm_persists(task, tmp_path):
+    confirm_all_matched(task, "复核员")
+    db = Store(tmp_path / "task.db")
+    db.save(task)
+    restored = Store(tmp_path / "task.db").load()
+    assert all(review_status(restored, g.id) == "已确认" for g in _matched(restored))
+    assert any(item.get("batch") for item in restored.reviews)
 
 
 def test_candidate_manual_link_and_no_double_consumption(task):

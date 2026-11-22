@@ -5,7 +5,7 @@ from streamlit.testing.v1 import AppTest
 
 from reconcile.audit import AuditStore
 from reconcile.auth import AuthStore
-from reconcile.storage import Store
+from reconcile.storage import Store, review_status
 
 
 def test_login_demo_review_and_navigation(tmp_path, monkeypatch):
@@ -136,3 +136,42 @@ def test_combined_role_can_import_review_and_see_entries(tmp_path, monkeypatch):
     assert int(batches["记录数"].sum()) == len(app.session_state["task"].records)
     detail = app.dataframe[1].value
     assert "录入人" in detail.columns
+
+
+def test_one_click_confirm_all_matched(tmp_path, monkeypatch):
+    """复核页的一键确认：只确认已匹配组，写审计记录，异常/未匹配保持待复核。"""
+    import reconcile.storage as storage
+    import reconcile.auth as auth_mod
+    import reconcile.audit as audit_mod
+    import reconcile.ai as ai
+    monkeypatch.setattr(storage, "Store", lambda path: Store(tmp_path / "ui.db"))
+    monkeypatch.setattr(auth_mod, "build_auth", lambda path: AuthStore(tmp_path / "users.json"))
+    monkeypatch.setattr(audit_mod, "build_audit", lambda path: AuditStore(tmp_path / "audit.db"))
+    monkeypatch.setattr(ai.LocalAI, "health", lambda self: False)
+    path = Path(__file__).resolve().parents[1] / "app.py"
+    app = AppTest.from_file(str(path), default_timeout=30).run()
+
+    app.text_input[0].set_value("admin")
+    app.text_input[1].set_value("admin123")
+    next(b for b in app.button if b.label.startswith("登录")).click().run()
+    next(b for b in app.button if b.label == "加载合成演示并运行对账").click().run()
+    app.sidebar.radio[0].set_value("结果与人工复核").run()
+    assert not app.exception
+
+    button = next(b for b in app.button if b.label.startswith("一键确认全部已匹配"))
+    assert "4 组" in button.label
+    button.click().run()
+    assert not app.exception
+    assert any("已确认 4 个已匹配组" in (s.value or "") for s in app.success)
+
+    task = app.session_state["task"]
+    matched = [g for g in task.groups if g.status == "已匹配"]
+    assert len(matched) == 4
+    assert all(review_status(task, g.id) == "已确认" for g in matched)
+    assert all(review_status(task, g.id) == "待复核" for g in task.groups if g.status != "已匹配")
+    assert sum(item["action"] == "确认" for item in task.reviews) == 4
+
+    actions = [event["action"] for event in AuditStore(tmp_path / "audit.db").recent(50)]
+    assert "批量确认已匹配组" in actions
+    # 全部确认后按钮变成 0 组并禁用，不会重复写入
+    assert "0 组" in next(b for b in app.button if b.label.startswith("一键确认全部已匹配")).label

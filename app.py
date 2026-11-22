@@ -23,7 +23,7 @@ from reconcile.engine import candidate_records
 from reconcile.exporter import group_rows, money, record_rows, workbook_bytes
 from reconcile.importer import fingerprint, normalize, read_sheet, sheet_names, suggest_mapping
 from reconcile.models import FIELDS, SOURCES, Task
-from reconcile.service import accept_candidate, create_task, record_review
+from reconcile.service import accept_candidate, confirm_all_matched, create_task, record_review
 from reconcile.storage import build_store, review_status, timestamp
 
 # 线上进程可能一直在运行：Streamlit 会重新执行本文件，但已导入的 reconcile.auth
@@ -229,7 +229,7 @@ def _clear_login():
 
 
 # 会话内的任务相关状态：切换账号时必须清空，否则同一浏览器会话里新账号会残留上一账号的任务
-_TASK_STATE_KEYS = ("task", "staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job")
+_TASK_STATE_KEYS = ("task", "staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job", "review_flash")
 
 
 def _clear_task_state():
@@ -849,6 +849,30 @@ elif page == "结果与人工复核":
         human = b.multiselect("人工复核状态", ["待复核", "已确认", "已驳回"], default=["待复核", "已确认", "已驳回"])
         shown = [g for g in task.groups if g.status in status and review_status(task, g.id) in human]
         st.caption(f"显示 {len(shown)} 个结果组 / 总计 {len(task.groups)} 个结果组")
+        # 已匹配的组通常占大多数且判断简单：给一个批量确认入口，避免逐组点几十次。
+        # 只覆盖「已匹配 + 待复核」，异常差异和未匹配仍需逐组看依据。
+        flash = st.session_state.pop("review_flash", "")
+        if flash:
+            st.success(flash)
+        batch_groups = [g for g in task.groups
+                        if g.status == "已匹配" and review_status(task, g.id) == "待复核"]
+        c_batch, c_batch_note = st.columns([1.1, 3.9])
+        if c_batch.button(f"一键确认全部已匹配（{len(batch_groups)} 组）", use_container_width=True,
+                          disabled=not batch_groups,
+                          help="把自动分类为「已匹配」且尚未复核的组全部记为人工确认；异常差异和未匹配不受影响"):
+            try:
+                confirmed = confirm_all_matched(task, actor)
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                persist()
+                _touch_active()
+                log_action("批量确认已匹配组", f"{confirmed} 组 · 一键复核")
+                st.session_state["review_flash"] = (
+                    f"已确认 {confirmed} 个已匹配组；异常差异和未匹配仍需逐组判断。")
+                st.rerun()
+        c_batch_note.caption("一键复核只处理「自动分类 = 已匹配」且仍是「待复核」的组，"
+                             "备注统一记为「一键确认全部已匹配组」；已确认 / 已驳回的组不会被改写。")
         st.dataframe(style_status(pd.DataFrame([r for r in group_rows(task) if r["结果组"] in {g.id for g in shown}])), hide_index=True, width="stretch")
         if shown:
             group_map = {g.id: g for g in shown}
