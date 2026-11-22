@@ -1009,8 +1009,22 @@ elif page == "AI 辅助与记录":
 
 else:
     st.subheader("数据存放与共享")
-    st.caption(f"任务按账号 + 设备隔离（当前设备标识 {_device}）：本设备导入的数据默认只有本设备可见；"
-               "换设备时先在原设备「发布到云端共享」，再到新设备登录同一账号并「从云端共享载入」。")
+    _cloud_tasks = getattr(store, "backend", "local") == "supabase"
+    _where = "云端" if _cloud_tasks else "本机"
+    st.caption(f"任务按账号 + 设备隔离（当前设备标识 {_device}）。共享空间归属账号「{current_user['username']}」· {_where}存储。"
+               + ("另一台设备必须登录同一账号才能载入。" if _cloud_tasks
+                  else "当前是本机存储，共享只在这台电脑生效；要跨设备共享请使用线上地址。"))
+    try:
+        _shared_now = shared_store.load()
+        _shared_err = ""
+    except (ValueError, OSError) as exc:
+        _shared_now, _shared_err = None, str(exc)
+    if _shared_err:
+        st.warning(f"共享空间读取失败：{_shared_err}")
+    elif _shared_now is not None:
+        st.caption(f"共享空间现有任务：{_shared_now.name} · {len(_shared_now.records)} 条记录")
+    else:
+        st.caption("共享空间当前为空。")
     if can_manage and not task:
         with st.expander("恢复升级前的共享数据"):
             st.caption("升级前的任务放在一个全局共享工作区里。这里可以把它复制到当前设备一次；"
@@ -1037,27 +1051,22 @@ else:
         st.info("复核账号只读：不能发布、载入或导入对账数据，以免覆盖导入账号建立的结果。下方可正常导出查看。")
     if can_import:
         c_share, c_load = st.columns(2)
-        if c_share.button("发布到云端共享", use_container_width=True, disabled=task is None,
-                          help="把当前任务复制到本账号的共享空间，供其它设备载入"):
+        if c_share.button(f"发布到{_where}共享", use_container_width=True, disabled=task is None,
+                          help=f"把当前任务复制到本账号的{_where}共享空间"):
             shared_store.save(task)
-            log_action("发布到云端共享", f"任务「{task.name}」")
-            st.success(f"已发布到共享空间（{timestamp()}）。其它设备可用「从云端共享载入」获取。")
-        if c_load.button("从云端共享载入", use_container_width=True,
+            log_action(f"发布到{_where}共享", f"任务「{task.name}」")
+            st.success(f"已发布到{_where}共享（{timestamp()}）。")
+        if c_load.button(f"从{_where}共享载入", use_container_width=True,
                          help="用共享空间的最新任务覆盖当前工作区的任务"):
-            try:
-                shared_task = shared_store.load()
-            except (ValueError, OSError) as exc:
-                shared_task = None
-                st.error(f"共享空间无法读取：{exc}")
-            if shared_task is None:
-                st.info("共享空间还是空的：先在任意设备上点「发布到云端共享」。")
+            if _shared_now is None:
+                st.info(f"{_where}共享空间还是空的：先在另一台设备（同一账号）点「发布到{_where}共享」。")
             else:
-                store.save(shared_task)
-                st.session_state.task = shared_task
+                store.save(_shared_now)
+                st.session_state.task = _shared_now
                 for key in ("staged", "import_logs", "mapping_ai", "seen_jobs", "current_job", "active_job"):
                     st.session_state.pop(key, None)
-                log_action("从云端共享载入", f"任务「{shared_task.name}」")
-                st.success(f"已载入共享任务：{shared_task.name}")
+                log_action(f"从{_where}共享载入", f"任务「{_shared_now.name}」")
+                st.success(f"已载入共享任务：{_shared_now.name}")
                 st.rerun()
 
     st.markdown("**手动迁移：对账包**")
