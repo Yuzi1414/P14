@@ -111,7 +111,7 @@ def workbook(headers, rows, numeric_padding=False):
 
 
 def test_multisheet_header_padding_and_bad_rows():
-    data = workbook(["付款单位","金额","日期"], [["000123","1,000.00","2026/10/01"], ["000002","BAD","2026/10/01"], [None,None,None], ["000004","20","2026/10/01"]], True)
+    data = workbook(["付款单位","金额","日期"], [[123,"1,000.00","2026/10/01"], ["000002","BAD","2026/10/01"], [None,None,None], ["000004","20","2026/10/01"]], True)
     frame = read_sheet(data, "test.xlsx", "明细", 2)
     records = normalize(frame, "bank", "test.xlsx", "明细", 2, suggest_mapping(frame.columns), fingerprint(data))
     assert records[0].name == "000123"
