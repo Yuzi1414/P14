@@ -1,7 +1,6 @@
 import uuid
 
 from . import engine
-from .importer import mark_duplicates
 from .models import Task
 from .storage import review_status, timestamp
 
@@ -10,15 +9,14 @@ def create_task(records, name="合成演示任务", mappings=None):
     if not records:
         raise ValueError("请先导入数据")
     sources = {r.source for r in records}
-    if sources != {"bank", "fees", "ledger"}:
-        raise ValueError("请分别导入银行、收费、往来账三类数据")
+    if sources != {"bank", "ledger"}:
+        raise ValueError("请分别导入银行流水与财务往来账两类数据")
     file_sources = {}
     for record in records:
         key = (record.file_hash, record.sheet)
         if key in file_sources and file_sources[key] != record.source:
             raise ValueError("同一文件的同一工作表不能重复充当不同数据来源")
         file_sources[key] = record.source
-    mark_duplicates(records)
     pairs, groups = engine.run(records)
     return Task(uuid.uuid4().hex, name, records, pairs, groups,
                 mappings=mappings or [], created_at=timestamp())
@@ -53,20 +51,25 @@ def confirm_all_matched(task, actor, note="一键确认全部已匹配组（未�
     return len(pending)
 
 
-def accept_candidate(task, bank_id, candidate_id, relation, actor, note):
+def accept_candidate(task, record_id, candidate_id, actor, note):
+    """Manually join one bank record with one ledger record (or the reverse)."""
     if not actor.strip() or not note.strip():
         raise ValueError("人工建立关联须填写复核人和依据")
-    if relation not in ("bank-fees", "bank-ledger"):
-        raise ValueError("未知核对关系")
-    a = next((p for p in task.pairs if p.relation == relation and p.left_ids == [bank_id] and not p.right_ids), None)
-    b = next((p for p in task.pairs if p.relation == relation and not p.left_ids and p.right_ids == [candidate_id]), None)
+    records = {r.id: r for r in task.records}
+    if record_id not in records or candidate_id not in records:
+        raise ValueError("记录不存在，请刷新结果")
+    record, candidate = records[record_id], records[candidate_id]
+    if {record.source, candidate.source} != {"bank", "ledger"}:
+        raise ValueError("只能连接一条银行流水与一条财务往来记录")
+    a = next((p for p in task.pairs
+              if record_id in p.left_ids + p.right_ids and len(p.left_ids + p.right_ids) == 1), None)
+    b = next((p for p in task.pairs
+              if candidate_id in p.left_ids + p.right_ids and len(p.left_ids + p.right_ids) == 1), None)
     if a is None or b is None:
         raise ValueError("候选已被分配或关系不再孤立，请刷新结果；不会覆盖已有匹配")
-    records = {r.id: r for r in task.records}
-    if records[bank_id].source != "bank" or records[candidate_id].source != relation.split("-")[1]:
-        raise ValueError("候选来源与关系不符")
-    old_groups = {g.id for g in task.groups if bank_id in g.record_ids or candidate_id in g.record_ids}
-    new_pair = engine.evaluate([records[bank_id]], [records[candidate_id]], relation, "人工关联", manual=True)
+    old_groups = {g.id for g in task.groups if record_id in g.record_ids or candidate_id in g.record_ids}
+    left, right = ([record], [candidate]) if record.source == "bank" else ([candidate], [record])
+    new_pair = engine.evaluate(left, right, manual=True)
     new_pairs = [p for p in task.pairs if p.id not in (a.id, b.id)] + [new_pair]
     new_groups = engine.assemble_groups(task.records, new_pairs)
     engine.assert_coverage(task.records, new_pairs, new_groups)
@@ -74,6 +77,7 @@ def accept_candidate(task, bank_id, candidate_id, relation, actor, note):
     # Group IDs change with membership. Existing reviews remain audit history, not approvals of new groups.
     task.reviews.append({"id": uuid.uuid4().hex, "group_id": "", "action": "建立关联",
                          "actor": actor.strip(), "note": note.strip(), "at": timestamp(),
-                         "bank_id": bank_id, "candidate_id": candidate_id, "relation": relation,
+                         "bank_id": record_id if record.source == "bank" else candidate_id,
+                         "candidate_id": candidate_id if record.source == "bank" else record_id,
+                         "relation": engine.RELATION,
                          "invalidated_groups": sorted(old_groups)})
-

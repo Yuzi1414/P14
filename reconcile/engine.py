@@ -1,97 +1,161 @@
-"""Deterministic pairwise matching, then bank-connected three-way groups."""
+"""Two-party matching: bank statement against the finance ledger.
+
+The only matching evidence is the payer (付款单位) plus the signed amount.
+Everything else (dates, IDs, export columns) is context for the reviewer and
+never decides whether two records belong together.
+"""
 import hashlib
-from collections import Counter, defaultdict
+import re
+import unicodedata
+from collections import defaultdict
 from difflib import SequenceMatcher
 
 from .models import GroupResult, PairResult
 
 MATCHED, UNMATCHED, EXCEPTION = "已匹配", "未匹配", "异常差异"
+RELATION = "bank-ledger"
+
+
+def yuan(cents):
+    if cents is None:
+        return ""
+    sign = "-" if cents < 0 else ""
+    cents = abs(cents)
+    return f"{sign}{cents // 100}.{cents % 100:02d}"
+
+
+def normalize_name(value):
+    text = unicodedata.normalize("NFKC", value or "")
+    return re.sub(r"\s+", "", text)
 
 
 def _id(prefix, values):
     return prefix + hashlib.sha256("|".join(sorted(values)).encode()).hexdigest()[:16]
 
 
-def evaluate(left, right, relation, key, manual=False):
-    reasons = []
-    if not left or not right:
-        reasons.append("缺少银行记录" if not left else "缺少对应来源记录")
-    errors = sorted({e for r in left + right for e in r.errors})
-    reasons.extend(errors)
-    valid_amounts = left and right and all(r.signed_cents is not None for r in left + right)
-    delta = sum(r.signed_cents for r in left) - sum(r.signed_cents for r in right) if valid_amounts else None
-    if left and right:
-        if len(left) > 1 and len(right) > 1:
-            reasons.append("多对多关系超出演示规则，需业务确认")
-        for members in (left, right):
-            counts = Counter(r.business_id for r in members if r.business_id)
-            if any(n > 1 for n in counts.values()):
-                reasons.append("同一来源业务编号不唯一")
-        if len(left) == len(right) == 1:
-            a, b = left[0], right[0]
-            if a.object_id and b.object_id and a.object_id != b.object_id:
-                reasons.append("对象标识冲突")
-            if a.batch_id and b.batch_id and a.batch_id != b.batch_id:
-                reasons.append("结算批次号冲突")
-        dates = {r.date for r in left + right if r.date}
-        if any(not r.date for r in left + right):
-            reasons.append("业务日期缺失")
-        elif len(dates) > 1:
-            reasons.append("跨日记录需确认结算规则")
-        if len({r.currency for r in left + right}) > 1:
-            reasons.append("币种冲突")
-        if len({r.direction for r in left + right}) > 1:
-            reasons.append("收支方向冲突，不自动抵销退款")
-    # An ambiguous association must never be presented as an established discrepancy.
-    if reasons:
-        status = UNMATCHED
-    elif delta != 0:
-        status = EXCEPTION
-        reasons = ["关联明确但金额不一致；手续费等原因未获业务确认"]
-    else:
-        status = MATCHED
-        reasons = ["明确关联、同日、同币种与方向，金额精确一致"]
-    if manual:
-        reasons = ["人工建立关联，金额与约束由规则重新计算"] + reasons
-    return PairResult(_id("p_", [relation] + [r.id for r in left + right]), relation,
+def _delta(left, right):
+    if not left or not right or any(r.signed_cents is None for r in left + right):
+        return None
+    return sum(r.signed_cents for r in left) - sum(r.signed_cents for r in right)
+
+
+def _pair(left, right, status, reasons, key, manual=False):
+    ids = [r.id for r in left + right]
+    return PairResult(_id("p_", [RELATION] + ids), RELATION,
                       [r.id for r in left], [r.id for r in right], status,
-                      list(dict.fromkeys(reasons)), delta, key, manual)
+                      list(dict.fromkeys(reasons)), _delta(left, right), key, manual)
 
 
-def match_relation(records, source):
-    relation = f"bank-{source}"
-    left = [r for r in records if r.source == "bank"]
-    right = [r for r in records if r.source == source]
-    used = set()
-    results = []
-    # Explicit common batch takes precedence, and is never inferred by a sum search.
-    for field, prefix in (("batch_id", "批次:"), ("business_id", "编号:")):
-        li, ri = defaultdict(list), defaultdict(list)
-        for r in left:
-            if r.id not in used and getattr(r, field):
-                li[getattr(r, field)].append(r)
-        for r in right:
-            if r.id not in used and getattr(r, field):
-                ri[getattr(r, field)].append(r)
-        for key in sorted(li.keys() & ri.keys()):
-            a, b = li[key], ri[key]
-            result = evaluate(a, b, relation, prefix + key)
-            # Repeated business IDs cannot establish 1:N; a batch ID is required.
-            if field == "business_id" and (len(a) != 1 or len(b) != 1):
-                result.status = UNMATCHED
-                result.reasons = list(dict.fromkeys(["业务编号重复，无法唯一关联"] + result.reasons))
-            results.append(result)
-            used.update(r.id for r in a + b)
-    for r in left + right:
-        if r.id not in used:
-            results.append(evaluate([r] if r.source == "bank" else [],
-                                    [] if r.source == "bank" else [r], relation,
-                                    "孤立:" + (r.business_id or r.batch_id or r.id)))
-    return results
+def _key(record):
+    """Exact join key: normalized payer + signed amount, or None when unusable."""
+    name = normalize_name(record.name)
+    if not name or record.signed_cents is None:
+        return None
+    return name, record.signed_cents
+
+
+def evaluate(left, right, key="人工关联", manual=False):
+    """Recompute one manual association with the same amount/payer rule."""
+    reasons = []
+    if not left:
+        reasons.append("缺少银行流水记录")
+    if not right:
+        reasons.append("缺少财务往来账记录")
+    if any(r.signed_cents is None for r in left + right):
+        reasons.append("金额缺失或无效")
+    if any(not normalize_name(r.name) for r in left + right):
+        reasons.append("付款单位为空")
+    status = UNMATCHED
+    if not reasons:
+        names = {normalize_name(r.name) for r in left + right}
+        amounts = {r.signed_cents for r in left + right}
+        if len(names) > 1:
+            reasons.append("付款单位不一致：" + " / ".join(r.name for r in left + right))
+        if len(amounts) > 1:
+            reasons.append(f"金额不一致，差额 {yuan(_delta(left, right))} 元")
+        if reasons:
+            status = EXCEPTION
+        else:
+            status = MATCHED
+            reasons = ["付款单位与金额一致"]
+    if manual:
+        reasons = ["人工建立关联"] + reasons
+    return _pair(left, right, status, reasons, key, manual)
+
+
+def match_records(records):
+    """Pair bank and ledger records one-to-one on payer + amount."""
+    bank = sorted((r for r in records if r.source == "bank"), key=lambda r: (r.row, r.id))
+    ledger = sorted((r for r in records if r.source == "ledger"), key=lambda r: (r.row, r.id))
+    buckets = defaultdict(lambda: {"bank": [], "ledger": []})
+    for record in bank + ledger:
+        key = _key(record)
+        if key:
+            buckets[key][record.source].append(record)
+
+    pairs, used = [], set()
+    for key in sorted(buckets, key=lambda item: (item[0], item[1])):
+        left, right = buckets[key]["bank"], buckets[key]["ledger"]
+        if not left or not right:
+            continue
+        label = f"{key[0]} · {yuan(key[1])}"
+        if len(left) == len(right):
+            note = (f"同付款单位同金额共 {len(left)} 笔，按导入顺序一一对应"
+                    if len(left) > 1 else "")
+            for a, b in zip(left, right):
+                pairs.append(_pair([a], [b], MATCHED,
+                                   ["付款单位与金额一致"] + ([note] if note else []), label))
+                used.update((a.id, b.id))
+        else:
+            # Counts differ: no pairing is provable, so every record stays open.
+            reason = (f"同付款单位同金额的记录数为银行 {len(left)} 条、"
+                      f"往来 {len(right)} 条，无法唯一对应")
+            for record in left + right:
+                pairs.append(_pair([record] if record.source == "bank" else [],
+                                   [record] if record.source == "ledger" else [],
+                                   UNMATCHED, [reason], label))
+                used.add(record.id)
+
+    # Same amount but a different payer: a real discrepancy worth a reviewer's attention.
+    left = [r for r in bank if r.id not in used]
+    right = [r for r in ledger if r.id not in used]
+    by_amount_left, by_amount_right = defaultdict(list), defaultdict(list)
+    for record in left:
+        if record.signed_cents is not None and normalize_name(record.name):
+            by_amount_left[record.signed_cents].append(record)
+    for record in right:
+        if record.signed_cents is not None and normalize_name(record.name):
+            by_amount_right[record.signed_cents].append(record)
+    for amount in sorted(set(by_amount_left) & set(by_amount_right)):
+        if len(by_amount_left[amount]) == 1 and len(by_amount_right[amount]) == 1:
+            a, b = by_amount_left[amount][0], by_amount_right[amount][0]
+            pairs.append(_pair(
+                [a], [b], EXCEPTION,
+                [f"金额一致（{yuan(amount)} 元），付款单位不一致：银行「{a.name}」/ "
+                 f"往来「{b.name}」，需人工确认"],
+                f"金额:{yuan(amount)}"))
+            used.update((a.id, b.id))
+
+    for record in bank + ledger:
+        if record.id in used:
+            continue
+        if record.amount_cents is None:
+            reason = "金额缺失或无效，无法参与对账"
+        elif not normalize_name(record.name):
+            reason = "付款单位为空，无法自动对账"
+        elif record.source == "bank":
+            reason = "缺少对应的财务往来账记录"
+        else:
+            reason = "缺少对应的银行流水记录"
+        label = (f"{normalize_name(record.name) or '付款单位缺失'} · "
+                 f"{yuan(record.signed_cents)}")
+        pairs.append(_pair([record] if record.source == "bank" else [],
+                           [record] if record.source == "ledger" else [],
+                           UNMATCHED, [reason], label))
+    return pairs
 
 
 def assemble_groups(records, pairs):
-    # Union-find over pair memberships; bank records connect the two relations.
     parent = {r.id: r.id for r in records}
 
     def find(x):
@@ -117,13 +181,14 @@ def assemble_groups(records, pairs):
         reasons = sorted({reason for p in ps for reason in p.reasons})
         if any(p.status == EXCEPTION for p in ps):
             status = EXCEPTION
-        elif present == {"bank", "fees", "ledger"} and all(p.status == MATCHED for p in ps):
+        elif present == {"bank", "ledger"} and all(p.status == MATCHED for p in ps):
             status = MATCHED
         else:
             status = UNMATCHED
-        labels = sorted({r.batch_id or r.business_id for r in members if r.batch_id or r.business_id})
+        primary = next((r for r in members if r.source == "bank"), members[0])
+        label = f"{primary.name or '付款单位缺失'} · {yuan(primary.signed_cents)}"
         groups.append(GroupResult(_id("g_", [r.id for r in members]), sorted(r.id for r in members),
-                                  sorted(p.id for p in ps), status, reasons, " / ".join(labels) or members[0].id))
+                                  sorted(p.id for p in ps), status, reasons, label))
     return sorted(groups, key=lambda g: (g.label, g.id))
 
 
@@ -131,42 +196,43 @@ def assert_coverage(records, pairs, groups):
     ids = {r.id for r in records}
     if len(ids) != len(records):
         raise ValueError("记录标识重复，疑似重复导入")
-    for source in ("fees", "ledger"):
-        relation_pairs = [p for p in pairs if p.relation == f"bank-{source}"]
-        actual = [rid for p in relation_pairs for rid in p.left_ids + p.right_ids]
-        expected = {r.id for r in records if r.source in ("bank", source)}
-        if len(actual) != len(set(actual)) or set(actual) != expected:
-            raise AssertionError(f"bank-{source} 记录遗漏或重复分配")
+    actual = [rid for p in pairs for rid in p.left_ids + p.right_ids]
+    if len(actual) != len(set(actual)) or set(actual) != ids:
+        raise AssertionError("核对关系存在记录遗漏或重复分配")
     actual = [rid for g in groups for rid in g.record_ids]
     if set(actual) != ids or len(actual) != len(ids):
-        raise AssertionError("三方汇总存在记录遗漏或重复")
+        raise AssertionError("结果汇总存在记录遗漏或重复")
 
 
 def run(records):
-    pairs = match_relation(records, "fees") + match_relation(records, "ledger")
+    pairs = match_records(records)
     groups = assemble_groups(records, pairs)
     assert_coverage(records, pairs, groups)
     return pairs, groups
 
 
-def candidate_records(task, bank_id, relation, limit=5):
+def candidate_records(task, record_id, limit=5):
+    """Unassigned opposite-source records, ranked by amount then payer similarity."""
+    record = next((r for r in task.records if r.id == record_id), None)
+    if record is None or record.source not in ("bank", "ledger"):
+        return []
     record_map = {r.id: r for r in task.records}
-    bank = record_map[bank_id]
-    eligible = {p.right_ids[0] for p in task.pairs
-                if p.relation == relation and not p.left_ids and len(p.right_ids) == 1}
+    opposite = "ledger" if record.source == "bank" else "bank"
+    eligible = []
+    for pair in task.pairs:
+        if pair.left_ids and pair.right_ids:
+            continue
+        ids = pair.left_ids + pair.right_ids
+        if len(ids) == 1 and record_map[ids[0]].source == opposite:
+            eligible.append(record_map[ids[0]])
     candidates = []
-    for rid in eligible:
-        r = record_map[rid]
+    for candidate in eligible:
         score = 0
-        if bank.amount_cents is not None and bank.amount_cents == r.amount_cents:
-            score += 40
-        if bank.object_id and bank.object_id == r.object_id:
-            score += 35
-        if bank.date and bank.date == r.date:
-            score += 10
-        if bank.name and r.name:
-            score += round(15 * SequenceMatcher(None, bank.name, r.name).ratio())
+        if record.signed_cents is not None and record.signed_cents == candidate.signed_cents:
+            score += 60
+        if record.name and candidate.name:
+            score += round(40 * SequenceMatcher(
+                None, normalize_name(record.name), normalize_name(candidate.name)).ratio())
         if score:
-            candidates.append((score, r))
+            candidates.append((score, candidate))
     return sorted(candidates, key=lambda item: (-item[0], item[1].id))[:min(limit, 5)]
-

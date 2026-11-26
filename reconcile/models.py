@@ -1,21 +1,16 @@
 from dataclasses import asdict, dataclass, field
 from typing import Literal
 
-Source = Literal["bank", "fees", "ledger"]
-SOURCES = {"bank": "银行流水", "fees": "学生收费", "ledger": "财务往来账"}
-FIELDS = {
-    "business_id": "业务编号", "batch_id": "结算批次号", "object_id": "对象标识",
-    "name": "往来对象", "date": "业务日期", "amount": "金额",
-    "direction": "收支方向", "currency": "币种",
-}
-RULE_VERSION = "demo-1.0"
+Source = Literal["bank", "ledger"]
+SOURCES = {"bank": "银行流水", "ledger": "财务往来账"}
+FIELDS = {"name": "付款单位", "amount": "金额", "date": "业务日期"}
+RULE_VERSION = "demo-2.0"
 RULE_SNAPSHOT = {
     "version": RULE_VERSION, "business_approved": False,
-    "relations": ["bank-fees", "bank-ledger"],
-    "currency": "CNY", "tolerance_cents": 0,
-    "batch": "explicit-one-to-many-or-many-to-one",
-    "date": "same-day-required", "fuzzy": "human-review-only",
-    "required_sources": ["bank", "fees", "ledger"],
+    "relations": ["bank-ledger"],
+    "basis": ["payer_name", "amount"], "tolerance_cents": 0,
+    "fuzzy": "human-review-only",
+    "required_sources": ["bank", "ledger"],
 }
 
 
@@ -90,4 +85,3 @@ class Task:
         return cls(**{**data, "records": [Record(**r) for r in data["records"]],
                       "pairs": [PairResult(**p) for p in data["pairs"]],
                       "groups": [GroupResult(**g) for g in data["groups"]]})
-

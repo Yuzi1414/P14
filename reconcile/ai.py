@@ -43,7 +43,7 @@ CLOUD_ALIASES = {
 
 # 兼容 scripts/verify_local_ai.py 的旧引用：这两个名字始终描述"本机 Ollama"那一路
 MODEL = LOCAL_MODEL
-PROMPT_VERSION = "p14-ai-2.0"
+PROMPT_VERSION = "p14-ai-2.1"
 
 
 class MappingItem(BaseModel):
@@ -178,11 +178,11 @@ def validate_suggestion(kind, payload, response):
             raise AIError("未知AI建议类型")
         result = parsed.model_dump()
         if kind == "candidate" and parsed.candidate_id is not None:
-            bank = payload.get("bank", {})
+            bank = payload.get("record") or payload.get("bank") or {}
             chosen = next(c for c in payload["candidates"] if c["id"] == parsed.candidate_id)
             result["verified_facts"] = {
                 field + "_exact": bank[field] == chosen[field] if bank.get(field) and chosen.get(field) else None
-                for field in ("business_id", "object_id", "name", "date", "amount", "direction")
+                for field in ("name", "date", "amount")
             }
         return result
     except ValidationError as exc:
@@ -193,11 +193,11 @@ def _instruction(kind):
     if kind == "mapping":
         return (
             "你是财务对账字段助手。将输入列名映射到标准字段。只输出确定的映射，无法识别就省略。"
-            "不要推测借贷就是收支。金额、编号、日期不能改写。cleaning_notes仅写待人工确认的清洗建议。"
+            "金额与付款单位不能改写；日期仅作备注。cleaning_notes仅写待人工确认的清洗建议。"
         )
     return (
         "你是对账候选解释助手。只能从给定候选中选择一个candidate_id，证据不足返回null。"
-        "说明依据和不确定性。同名或同金额不足以确认关联。你不能计算最终分类或批准财务结果。"
+        "说明依据和不确定性。同金额或同付款单位都不足以单独确认关联。你不能计算最终分类或批准财务结果。"
     )
 
 

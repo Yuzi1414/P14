@@ -18,10 +18,9 @@ def money(cents):
 
 
 def record_rows(task):
-    return [{"记录标识": r.id, "来源": SOURCES[r.source], "文件": r.file, "工作表": r.sheet,
-             "原始行号": r.row, "业务编号": r.business_id, "批次号": r.batch_id,
-             "对象标识": r.object_id, "往来对象": r.name, "日期": r.date, "币种": r.currency,
-             "方向": r.direction, "金额(元)": money(r.amount_cents),
+    return [{"记录标识": r.id, "来源": SOURCES.get(r.source, r.source), "文件": r.file,
+             "工作表": r.sheet, "原始行号": r.row, "付款单位": r.name, "业务日期": r.date,
+             "金额(元)": money(r.signed_cents if r.signed_cents is not None else r.amount_cents),
              "错误": "；".join(r.errors), "提示": "；".join(r.warnings)} for r in task.records]
 
 
@@ -38,14 +37,27 @@ def _group_notes(task):
 
 def group_rows(task):
     pairs = {p.id: p for p in task.pairs}
+    record_map = {r.id: r for r in task.records}
     notes = _group_notes(task)
-    return [{"结果组": g.id, "业务/批次": g.label, "自动分类": g.status,
-             "人工复核": review_status(task, g.id), "原始记录数": len(g.record_ids),
-             "银行-收费差额(元)": "；".join(money(pairs[x].delta_cents) for x in g.pair_ids if pairs[x].relation == "bank-fees"),
-             "银行-往来差额(元)": "；".join(money(pairs[x].delta_cents) for x in g.pair_ids if pairs[x].relation == "bank-ledger"),
-             "判断依据": "；".join(g.reasons), "人工详细备注": notes.get(g.id, ""),
-             "成员标识": "；".join(g.record_ids),
-             "规则版本": task.rules["version"]} for g in task.groups]
+    rows = []
+    for group in task.groups:
+        members = [record_map[rid] for rid in group.record_ids if rid in record_map]
+        primary = next((r for r in members if r.source == "bank"), members[0] if members else None)
+        delta = [pairs[x].delta_cents for x in group.pair_ids if pairs[x].delta_cents is not None]
+        rows.append({
+            "结果组": group.id,
+            "付款单位": primary.name if primary else "",
+            "金额(元)": money(primary.signed_cents if primary else None),
+            "自动分类": group.status,
+            "人工复核": review_status(task, group.id),
+            "原始记录数": len(group.record_ids),
+            "差额(元)": money(sum(delta)) if delta else "",
+            "判断依据": "；".join(group.reasons),
+            "人工详细备注": notes.get(group.id, ""),
+            "成员标识": "；".join(group.record_ids),
+            "规则版本": task.rules.get("version", ""),
+        })
+    return rows
 
 
 def _value(v):
@@ -95,16 +107,17 @@ def workbook_bytes(task):
     sheet("汇总", [{"项目": k, "值": v} for k, v in {
         "用途": "仅供辅助参考；演示规则未经财务确认，不用于正式财务结算",
         "任务": task.name, "创建时间": task.created_at, "规则": task.rules,
+        "对账依据": "付款单位 + 金额（精确到分；日期、编号不参与判定）",
         "原始记录数": len(task.records), "结果组数": len(task.groups),
         "已匹配组数": counts["已匹配"], "未匹配组数": counts["未匹配"], "异常差异组数": counts["异常差异"],
         "待复核组数": sum(review_status(task, g.id) == "待复核" for g in task.groups),
-        "差额定义": "银行有符号金额合计减对应来源有符号金额合计；缺失或无效金额留空，不能视为零",
+        "差额定义": "银行有符号金额合计减财务往来账有符号金额合计；缺失或无效金额留空，不能视为零",
     }.items()])
     grows = group_rows(task)
     for status in ("已匹配", "未匹配", "异常差异"):
         sheet(status, [r for r in grows if r["自动分类"] == status], list(grows[0]) if grows else None)
     sheet("核对关系", [{"关系标识": p.id, "核对关系": p.relation, "银行记录": p.left_ids,
-                          "对应记录": p.right_ids, "状态": p.status, "差额(元)": money(p.delta_cents),
+                          "往来记录": p.right_ids, "状态": p.status, "差额(元)": money(p.delta_cents),
                           "依据": p.reasons, "关联键": p.key, "人工建立关联": p.manual} for p in task.pairs])
     sheet("标准化数据", record_rows(task))
     sheet("原始数据", [{"记录标识": r.id, "文件": r.file, "工作表": r.sheet, "原始行号": r.row,

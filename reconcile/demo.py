@@ -7,7 +7,7 @@ from .service import create_task
 def load_demo():
     root = Path(__file__).resolve().parents[1] / "samples"
     records, mappings = [], []
-    for source, name in (("bank", "银行流水"), ("fees", "学生收费"), ("ledger", "财务往来账")):
+    for source, name in (("bank", "银行流水"), ("ledger", "财务往来账")):
         path = root / f"{name}.xlsx"
         data = path.read_bytes()
         frame = read_sheet(data, path.name, "演示明细")

@@ -12,14 +12,10 @@ import pandas as pd
 from .models import FIELDS, SOURCES, Record
 
 ALIASES = {
-    "business_id": ["业务编号", "交易编号", "流水号", "订单号", "缴费单号", "凭证关联号"],
-    "batch_id": ["结算批次号", "批次号", "结算单号"],
-    "object_id": ["对象标识", "学号", "学生编号", "客户编号"],
-    "name": ["往来对象", "姓名", "学生姓名", "户名", "对方名称"],
-    "date": ["业务日期", "日期", "入账日期", "交易日期", "缴费日期", "记账日期"],
-    "amount": ["金额", "入账金额", "收费金额", "记账金额", "交易金额", "缴费金额"],
-    "direction": ["收支方向", "方向", "借贷方向", "收付标志"],
-    "currency": ["币种", "货币"],
+    "name": ["付款单位", "付款方", "付款人", "付款单位名称", "单位名称", "对方户名", "对方名称",
+             "往来对象", "户名", "客户名称", "姓名"],
+    "amount": ["金额", "付款金额", "交易金额", "入账金额", "发生额", "记账金额", "收费金额", "缴费金额"],
+    "date": ["业务日期", "日期", "交易日期", "入账日期", "记账日期", "付款日期"],
 }
 
 
@@ -155,6 +151,8 @@ def normalize(frame, source, filename, sheet, header_row, mapping, file_hash):
         raise ValueError("未知数据来源")
     if not mapping.get("amount"):
         raise ValueError("必须映射金额字段")
+    if not mapping.get("name"):
+        raise ValueError("必须映射付款单位字段")
     selected = [c for c in mapping.values() if c]
     if len(selected) != len(set(selected)):
         raise ValueError("同一列不能映射到多个标准字段")
@@ -171,64 +169,25 @@ def normalize(frame, source, filename, sheet, header_row, mapping, file_hash):
         get = lambda f: row.get(mapping.get(f, ""), "")
         record = Record(id=rid, source=source, file=Path(filename).name, sheet=sheet,
                         row=row_no, file_hash=file_hash, raw=raw)
-        for field in ("business_id", "batch_id", "object_id", "name"):
-            setattr(record, field, text(get(field)))
-        if not any(v.strip() for v in raw.values()):
+        if not any(str(v).strip() for v in raw.values()):
             record.errors.append("空白行：保留位置，不参与自动匹配")
-        for field in ("business_id", "object_id", "batch_id"):
-            v = get(field)
-            if isinstance(v, (float, int)) and len(text(v).replace("-", "")) > 15:
-                record.errors.append(f"{FIELDS[field]}为超过15位的Excel数值，可能已丢失精度")
+        record.name = text(get("name"))
+        if not record.name:
+            record.warnings.append("付款单位为空：无法自动对账")
+        signed = None
         try:
             signed = parse_amount(get("amount"))
             record.amount_cents = abs(signed)
         except ValueError as exc:
-            signed = None
             record.errors.append(str(exc))
-        direction = text(get("direction"))
-        directions = {"收入": "IN", "收": "IN", "入": "IN", "流入": "IN", "IN": "IN",
-                      "支出": "OUT", "付": "OUT", "出": "OUT", "流出": "OUT", "OUT": "OUT", "退款": "OUT"}
-        if not direction:
-            record.direction = "OUT" if signed is not None and signed < 0 else "IN"
-            record.warnings.append("收支方向缺失：依据金额符号推断，需确认")
-        elif direction.upper() in directions:
-            record.direction = directions[direction.upper()]
-            if signed is not None and signed < 0 and record.direction == "IN":
-                record.errors.append("负数金额与流入方向冲突")
-        else:
-            record.direction = "UNKNOWN"
-            record.errors.append("收支方向无法识别（借贷不可直接等同收支）")
-        currency = text(get("currency")).upper()
-        record.currency = {"人民币": "CNY", "RMB": "CNY", "￥": "CNY", "¥": "CNY"}.get(currency, currency or "CNY")
-        if not currency:
-            record.warnings.append("币种缺失：演示默认CNY，需确认")
-        if record.currency != "CNY":
-            record.errors.append("演示规则仅支持CNY，不做汇率换算")
-        try:
-            record.date = parse_date(get("date"))
-        except ValueError as exc:
-            record.errors.append(str(exc))
-        if not record.date:
-            record.warnings.append("业务日期缺失，不能自动确认同日结算")
-        if not record.business_id and not record.batch_id:
-            record.warnings.append("业务编号和批次号均缺失：只能人工建立关联")
+        record.direction = "OUT" if signed is not None and signed < 0 else "IN"
+        record.currency = "CNY"
+        if mapping.get("date"):
+            try:
+                record.date = parse_date(get("date"))
+            except ValueError as exc:
+                record.errors.append(str(exc))
+            if not record.date:
+                record.warnings.append("业务日期为空（仅作备注，不参与对账判定）")
         records.append(record)
-    return records
-
-
-def mark_duplicates(records):
-    # Recompute rather than accumulate warnings on each import.
-    from collections import defaultdict
-    buckets = defaultdict(list)
-    marker = "疑似重复原始记录：已保留，暂停自动匹配"
-    for r in records:
-        r.errors = [e for e in r.errors if e != marker]
-        signature = (r.source, r.business_id, r.batch_id, r.object_id, r.name,
-                     r.date, r.amount_cents, r.direction, r.currency)
-        if r.amount_cents is not None:
-            buckets[signature].append(r)
-    for group in buckets.values():
-        if len(group) > 1:
-            for r in group:
-                r.errors.append(marker)
     return records

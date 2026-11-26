@@ -35,9 +35,9 @@ def test_login_demo_review_and_navigation(tmp_path, monkeypatch):
     assert not app.exception
     # 总览页的指标卡是自定义 HTML（st.markdown），不是 st.metric，所以直接核对任务数据
     loaded = app.session_state["task"]
-    assert loaded is not None and len(loaded.records) == 45
+    assert loaded is not None and len(loaded.records) == 21
     counts = [sum(g.status == status for g in loaded.groups) for status in ("已匹配", "未匹配", "异常差异")]
-    assert counts == [4, 13, 2]
+    assert counts == [6, 7, 1]
 
     app.sidebar.radio[0].set_value("结果与人工复核").run()
     assert not app.exception
@@ -159,17 +159,17 @@ def test_one_click_confirm_all_matched(tmp_path, monkeypatch):
     assert not app.exception
 
     button = next(b for b in app.button if b.label.startswith("一键确认全部已匹配"))
-    assert "4 组" in button.label
+    assert "6 组" in button.label
     button.click().run()
     assert not app.exception
-    assert any("已确认 4 个已匹配组" in (s.value or "") for s in app.success)
+    assert any("已确认 6 个已匹配组" in (s.value or "") for s in app.success)
 
     task = app.session_state["task"]
     matched = [g for g in task.groups if g.status == "已匹配"]
-    assert len(matched) == 4
+    assert len(matched) == 6
     assert all(review_status(task, g.id) == "已确认" for g in matched)
     assert all(review_status(task, g.id) == "待复核" for g in task.groups if g.status != "已匹配")
-    assert sum(item["action"] == "确认" for item in task.reviews) == 4
+    assert sum(item["action"] == "确认" for item in task.reviews) == 6
 
     actions = [event["action"] for event in AuditStore(tmp_path / "audit.db").recent(50)]
     assert "批量确认已匹配组" in actions

@@ -15,11 +15,11 @@ def test_candidate_out_of_bounds_rejected():
 
 
 def test_candidate_explanation_cannot_override_computed_facts():
-    suggestion=validate_suggestion("candidate", {"bank":{"name":"学生甲缴费","object_id":"S1","amount":"100.00"},
-        "candidates":[{"id":"A","name":"学生甲","object_id":"S1","amount":"100.00"}]},
+    suggestion=validate_suggestion("candidate", {"record":{"name":"学生甲缴费","amount":"100.00"},
+        "candidates":[{"id":"A","name":"学生甲","amount":"100.00"}]},
         {"candidate_id":"A","reason":"名称完全相同","cleaning_notes":[]})
     assert suggestion["verified_facts"]["name_exact"] is False
-    assert suggestion["verified_facts"]["object_id_exact"] is True
+    assert suggestion["verified_facts"]["amount_exact"] is True
     assert suggestion["verified_facts"]["date_exact"] is None
 
 

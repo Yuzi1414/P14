@@ -22,7 +22,7 @@ from reconcile.demo import load_demo
 from reconcile.engine import candidate_records
 from reconcile.exporter import group_rows, money, record_rows, workbook_bytes
 from reconcile.importer import fingerprint, normalize, read_sheet, sheet_names, suggest_mapping
-from reconcile.models import FIELDS, SOURCES, Task
+from reconcile.models import FIELDS, RULE_VERSION, SOURCES, Task
 from reconcile.service import accept_candidate, confirm_all_matched, create_task, record_review
 from reconcile.storage import build_store, review_status, timestamp
 
@@ -327,7 +327,7 @@ def render_auth_gate():
             '<div class="login-title"><b>账务核对工作台</b><span>P14 / FINANCE OPS</span></div></div>',
             unsafe_allow_html=True,
         )
-        st.markdown('<p class="login-sub">银行流水 · 学生收费 · 财务往来 三方对账。账号分「导入」「复核」「录入复核」三种角色：导入负责导入表格并建立对账，复核只查看结果并提交复核结论，录入复核两者都能做、还能查看他人的录入记录。注册即开通。</p>', unsafe_allow_html=True)
+        st.markdown('<p class="login-sub">银行流水 · 财务往来账 两方对账，按付款单位与金额自动配对。账号分「导入」「复核」「录入复核」三种角色：导入负责导入表格并建立对账，复核只查看结果并提交复核结论，录入复核两者都能做、还能查看他人的录入记录。注册即开通。</p>', unsafe_allow_html=True)
         tab_login, tab_register = st.tabs(["登录", "注册"])
         with tab_login:
             with st.form("login_form"):
@@ -468,6 +468,21 @@ for key, default in {"staged": {}, "import_logs": [], "mapping_ai": {}, "seen_jo
 task = st.session_state.task
 record_index = {r.id: r for r in task.records} if task else {}
 
+# 旧版任务含「学生收费」来源，新的两方规则无法安全复用；明确提示并允许清空重来。
+if task and any(r.source not in SOURCES for r in task.records):
+    st.warning("当前设备上的任务是旧版「三方对账」结果（含学生收费），与新的两方规则不兼容。"
+               "请重新导入银行流水与财务往来账，或加载合成演示。")
+    if can_import:
+        if st.button("清除当前设备上的旧版任务并重新开始"):
+            try:
+                store.clear()
+            except OSError:
+                pass
+            st.session_state.task = None
+            _clear_task_state()
+            st.rerun()
+    st.stop()
+
 
 def persist():
     if st.session_state.task:
@@ -481,7 +496,7 @@ def render_suggestion(result):
     else:
         st.write(result.get("reason", "未提供解释"))
         st.caption("建议候选：" + (result.get("candidate_id") or "证据不足，未选择"))
-        fact_labels = {"business_id": "业务编号", "object_id": "对象标识", "name": "名称", "date": "日期", "amount": "金额", "direction": "收支方向"}
+        fact_labels = {"name": "付款单位", "date": "日期", "amount": "金额"}
         if result.get("verified_facts"):
             st.dataframe([{"程序核对字段": fact_labels.get(key.removesuffix("_exact"), key),
                            "是否完全一致": "缺少字段" if value is None else "是" if value else "否"}
@@ -511,19 +526,19 @@ def eyebrow_html(cloud):
 
 
 def hero_html(cloud, ai):
-    chips = ("云端部署" if cloud else "本地运行", "规则 demo-1.0",
+    chips = ("云端部署" if cloud else "本地运行", f"规则 {RULE_VERSION}",
              f"AI 辅助：{ai['provider_label']}", "数据存 Supabase" if cloud else "数据仅存本机")
     meta = "".join(f"<span>{chip}</span>" for chip in chips)
     return (f'<div class="hero"><div class="hero-eyebrow">{eyebrow_html(cloud)}</div>'
-            '<h1>三方账务核对平台</h1>'
-            '<p>把重复核对交给规则，把判断依据留给财务人员。银行流水 · 学生收费 · 财务往来 三源对账，所有自动结果均须人工复核。</p>'
+            '<h1>两方账务核对平台</h1>'
+            '<p>把重复核对交给规则，把判断依据留给财务人员。银行流水与财务往来账两方对账，只看付款单位与金额，所有自动结果均须人工复核。</p>'
             f'<div class="hero-meta">{meta}</div></div>')
 
 
 def group_label(group):
-    label = "缺少业务编号" if group.label in group.record_ids else group.label
-    sources = " / ".join(SOURCES[source] for source in SOURCES if any(record_index[rid].source == source for rid in group.record_ids))
-    return f"{label} · {sources}"
+    sources = " / ".join(SOURCES.get(source, source) for source in SOURCES
+                         if any(record_index[rid].source == source for rid in group.record_ids))
+    return f"{group.label} · {sources}"
 
 
 def entry_rows(task):
@@ -673,7 +688,7 @@ with st.sidebar:
                     st.error(str(exc))
     st.divider()
     st.markdown("**运行边界**")
-    st.caption("演示规则 demo-1.0 · 未经财务确认")
+    st.caption(f"演示规则 {RULE_VERSION} · 未经财务确认")
     st.caption(f"本设备工作区 · 设备标识 {_device}\n\n数据默认只在本设备可见；发布到共享空间后其他账号/设备可载入")
     _auth_backend = "Supabase 云端" if getattr(auth, "backend", "local") == "supabase" else "本地文件"
     _task_backend = "Supabase 云端" if getattr(store, "backend", "local") == "supabase" else "本机文件"
@@ -719,7 +734,7 @@ if page == "对账总览":
     cols = st.columns(3)
     for col, num, title, description in zip(cols, ["01", "02", "03"],
         ["导入并确认字段", "规则核对与 AI 建议", "人工复核与导出"],
-        ["多份 Excel 统一映射，保留原始行号。", "两组关系独立核对，所有差异可追溯。", "自动分类与人工结论分别记录。"]):
+        ["多份 Excel 统一映射，保留原始行号。", "按付款单位与金额精确配对，所有差异可追溯。", "自动分类与人工结论分别记录。"]):
         col.markdown(f'<div class="step"><div class="step-no">{num}</div><b>{title}</b><p>{description}</p></div>', unsafe_allow_html=True)
     if task:
         counts = {status: sum(g.status == status for g in task.groups) for status in ("已匹配", "未匹配", "异常差异")}
@@ -733,7 +748,7 @@ if page == "对账总览":
         ]
         for col, (icon, label, value, (bg, fg)) in zip(metrics, cards):
             col.markdown(metric_card(icon, label, value, bg, fg), unsafe_allow_html=True)
-        st.caption(f"原始记录 {len(task.records)} 条；两组关系允许引用同一银行记录，每组关系内均检查无重复分配。")
+        st.caption(f"原始记录 {len(task.records)} 条；每条银行流水与一条财务往来账组成一个结果组，记录只进入一个结果组。")
         st.subheader("当前结果概览")
         st.dataframe(style_status(pd.DataFrame(group_rows(task)).drop(columns=["成员标识"])), hide_index=True, width="stretch")
         st.download_button("导出完整核对工作簿", workbook_bytes(task), "P14-对账结果.xlsx",
@@ -744,11 +759,11 @@ if page == "对账总览":
             st.caption("当前是复核账号：只能查看结果并提交复核结论，不能导入或替换对账数据。")
     if can_import:
         with st.expander("合成演示数据", expanded=not bool(task)):
-            st.caption("样例覆盖金额差异、缺少来源、批次汇总、重复编号、退款、跨日与模糊候选。全部为虚构数据。")
+            st.caption("样例覆盖精确匹配、付款单位不一致、单边缺少记录、同键多笔与退款。全部为虚构数据。")
             demo_controls()
 
 elif page == "导入与字段确认":
-    st.info("在本机选择授权的脱敏/模拟文件。先确认每份文件的工作表、表头和字段，再建立新任务。")
+    st.info("在本机选择授权的脱敏/模拟文件。先确认每份文件的工作表、表头和字段（付款单位与金额必填），再建立新任务。")
     for source, label in SOURCES.items():
         with st.expander(label, expanded=True):
             uploads = st.file_uploader(f"选择{label}文件", type=["xlsx", "xls"], accept_multiple_files=True, key="upload_" + source)
@@ -822,7 +837,7 @@ elif page == "导入与字段确认":
                 staged.pop(k)
             st.rerun()
     name = st.text_input("新任务名称", value="本地核对任务")
-    confirmed = st.checkbox("我已检查字段映射、默认币种与方向；确认建立新任务并替换当前任务。")
+    confirmed = st.checkbox("我已检查字段映射与付款单位、金额；确认建立新任务并替换当前任务。")
     if st.button("开始规则对账", type="primary", disabled=not (staged and confirmed) or worker().busy):
         try:
             entries = list(staged.values())
@@ -882,17 +897,17 @@ elif page == "结果与人工复核":
             st.write("自动分类：**" + group.status + "**　人工复核：**" + review_status(task, gid) + "**")
             st.write("；".join(group.reasons))
             st.dataframe([r for r in record_rows(task) if r["记录标识"] in group.record_ids], hide_index=True, width="stretch")
-            with st.expander("原始数据与两组核对关系"):
+            with st.expander("原始数据与核对关系"):
                 for p in task.pairs:
                     if p.id in group.pair_ids:
-                        st.write(f"**{p.relation}** · {p.status} · 差额 {money(p.delta_cents) or '未知'} 元")
+                        st.write(f"**银行 ↔ 往来** · {p.status} · 差额 {money(p.delta_cents) or '未知'} 元")
                         st.caption("；".join(p.reasons))
                 st.json([{ "记录标识": r.id, "原始内容": r.raw} for r in task.records if r.id in group.record_ids])
             with st.form("review_" + task.id + "_" + gid):
                 st.markdown("**人工复核与详细备注**")
                 action = st.radio("复核结论", ["确认", "驳回"], horizontal=True)
                 note = st.text_area("详细备注 / 判断依据（支持多行；驳回须填写原因）", height=150,
-                                    placeholder="例如：该组银行与收费金额精确一致、同日同币种，依据业务编号关联确认……")
+                                    placeholder="例如：该组付款单位与金额一致，已核对原始单据……")
                 st.caption("确认表示已核查该分类；不会将异常差额清零，也不代表正式财务批准。填写的详细备注会写入导出的结果组「人工详细备注」列。")
                 if st.form_submit_button("保存复核结论", type="primary"):
                     try:
@@ -905,44 +920,48 @@ elif page == "结果与人工复核":
                         st.error(str(exc))
             if not can_import:
                 st.caption("复核账号只读：候选补配、建立关联属于修改对账数据，只能由导入账号处理；此处仅可提交复核结论。")
-            orphan_pairs = [p for p in task.pairs if p.id in group.pair_ids and len(p.left_ids) == 1 and not p.right_ids] if can_import else []
+            orphan_pairs = [p for p in task.pairs
+                            if p.id in group.pair_ids and len(p.left_ids + p.right_ids) == 1] if can_import else []
             if orphan_pairs:
                 st.subheader("人工候选关联")
-                pmap = {p.id: p for p in orphan_pairs}
-                pid = st.selectbox("选择需要补充的核对关系", list(pmap), format_func=lambda k: pmap[k].relation)
-                pair = pmap[pid]
-                bank_id = pair.left_ids[0]
-                candidates = candidate_records(task, bank_id, pair.relation)
                 record_map = {r.id: r for r in task.records}
+                pmap = {p.id: p for p in orphan_pairs}
+                pid = st.selectbox("选择需要补充的核对关系", list(pmap),
+                                   format_func=lambda k: record_map[(pmap[k].left_ids + pmap[k].right_ids)[0]].name
+                                   + " · " + money(record_map[(pmap[k].left_ids + pmap[k].right_ids)[0]].signed_cents))
+                pair = pmap[pid]
+                record_id = (pair.left_ids + pair.right_ids)[0]
+                candidates = candidate_records(task, record_id)
                 if candidates:
-                    st.dataframe([{"记录标识": r.id, "启发式排序分": score, "业务编号": r.business_id,
-                                   "对象": r.name, "对象标识": r.object_id, "金额(元)": money(r.amount_cents),
+                    st.dataframe([{"记录标识": r.id, "启发式排序分": score, "来源": SOURCES.get(r.source, r.source),
+                                   "付款单位": r.name, "金额(元)": money(r.signed_cents),
                                    "日期": r.date} for score, r in candidates], hide_index=True, width="stretch")
-                    st.caption("排序分用于缩小范围，不是匹配概率；金额相同不会自动建立关联。")
+                    st.caption("排序分用于缩小范围，不是匹配概率；付款单位与金额一致也不会自动建立关联。")
                     st.caption("模型说明可能有误。程序核对结果单独列出字段是否一致；缺少字段不表示一致。")
-                    minimal = lambda r: {"id": r.id, "business_id": r.business_id, "object_id": r.object_id,
-                                         "name": r.name, "date": r.date, "amount": money(r.amount_cents), "direction": r.direction}
+                    minimal = lambda r: {"id": r.id, "name": r.name, "date": r.date,
+                                         "amount": money(r.signed_cents)}
                     if st.button("请 AI 解释候选", key="candidate_ai_" + pid,
                                  disabled=not ai_ok, help=None if ai_ok else _ai["hint"]):
-                        submit_ai("candidate", {"bank": minimal(record_map[bank_id]),
+                        submit_ai("candidate", {"record": minimal(record_map[record_id]),
                                   "candidates": [minimal(r) for _, r in candidates]},
-                                  {"bank_id": bank_id, "relation": pair.relation})
+                                  {"record_id": record_id, "relation": pair.relation})
                     candidate_id = st.selectbox("人工选择候选记录", [r.id for _, r in candidates],
-                        format_func=lambda rid: record_map[rid].business_id + " · " + record_map[rid].name + " · " + rid)
-                    latest = next((log for log in reversed(task.ai_logs) if log.get("context", {}).get("bank_id") == bank_id
+                        format_func=lambda rid: (record_map[rid].name or "付款单位缺失") + " · "
+                        + money(record_map[rid].signed_cents) + " · " + SOURCES.get(record_map[rid].source, ""))
+                    latest = next((log for log in reversed(task.ai_logs) if log.get("context", {}).get("record_id") == record_id
                                    and log.get("context", {}).get("relation") == pair.relation and log["status"] == "success"), None)
                     if latest:
                         render_suggestion(latest["suggestion"])
                     evidence = st.text_input("建立关联的人工依据", key="evidence_" + pid)
                     if st.button("确认建立关联并重算", key="accept_" + pid):
                         try:
-                            accept_candidate(task, bank_id, candidate_id, pair.relation, actor, evidence)
+                            accept_candidate(task, record_id, candidate_id, actor, evidence)
                             if latest:
                                 latest["adoption"] = "已采纳候选" if latest["suggestion"]["candidate_id"] == candidate_id else "人工选择其他候选"
                             persist()
                             _touch_active()
                             log_action("人工建立候选关联",
-                                       f"{pair.relation} · {record_map[candidate_id].business_id} · 依据：{evidence}")
+                                       f"银行 ↔ 往来 · {record_map[candidate_id].name} · 依据：{evidence}")
                             st.rerun()
                         except ValueError as exc:
                             st.error(str(exc))
@@ -1228,4 +1247,4 @@ if page == "用户与权限":
                     st.error(str(exc))
 
 ai_progress()
-st.markdown('<div class="footer">P14 / 账务核对平台　·　本地演示原型　·　规则 demo-1.0　·　所有结果须人工复核</div>', unsafe_allow_html=True)
+st.markdown('<div class="footer">P14 / 账务核对平台　·　两方对账演示原型　·　规则 ' + RULE_VERSION + '　·　所有结果须人工复核</div>', unsafe_allow_html=True)

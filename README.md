@@ -1,6 +1,6 @@
 # P14 账务核对平台
 
-本地财务对账演示原型。导入银行流水、学生收费、财务往来账 Excel，分别核对银行—收费与银行—往来关系，汇总三方结果，支持本地 AI 建议、人工复核及 Excel 导出。
+本地财务对账演示原型。导入银行流水与财务往来账两份 Excel，按「付款单位 + 金额」一对一配对，支持本地 AI 建议、人工复核及 Excel 导出。
 
 **全部演示规则未经财务确认，所有输出仅供辅助参考，不用于正式财务结算。** `samples/` 为独立合成数据，不包含财务处真实样例。
 
@@ -25,7 +25,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\setup-ai.ps1
 
 若本机代理使 Ollama 下载器返回 EOF，安装脚本会尝试 `scripts/download_model.py`，通过系统 curl 从同一官方 registry 下载并验证各文件 SHA256，不修改证书或系统代理。已安装模型再次执行 setup 不重新下载。
 
-进入工作台后先登录（或注册一个账号），加载合成演示，切换“结果与人工复核”查看依据。银行缺编号的演示记录可体验候选解释与人工关联。更多步骤见 [用户操作说明](docs/USER_GUIDE.md)。
+进入工作台后先登录（或注册一个账号），加载合成演示，切换“结果与人工复核”查看依据。付款单位缺失、同额多笔或单边缺记录的演示组可体验候选解释与人工关联。更多步骤见 [用户操作说明](docs/USER_GUIDE.md)。
 
 `dist/` 成果包包含源码、文档、合成样例和验证证据，不包含模型、虚拟环境或本机任务数据库。另一台设备需要按以上脚本重建环境。更新源码后请重启工作台，避免保留旧的内存缓存。
 
@@ -40,7 +40,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\setup-ai.ps1
 
 - `reconcile/`：导入标准化、规则引擎、AI 适配（本地 Ollama／云端千问双后端）、复核服务、SQLite／Supabase 存储及 Excel 导出。
 - `app.py`：Streamlit 工作台，计算逻辑独立于界面。
-- `samples/`：三类合成 Excel、独立预期结果。
+- `samples/`：银行流水与财务往来账两份合成 Excel、独立预期结果。
 - `docs/`：PRD、业务规则、验收记录、操作与汇报材料。
 - `runtime/`、`.runtime/`：本机任务、日志、模型及工具，已排除出版本库。
 
@@ -48,5 +48,5 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\setup-ai.ps1
 
 不连接生产系统，不自动制单或记账，不提供公网 API。不要把受限数据放到源代码或 `samples/`。任务数据库、AI 使用记录、导出及截图可能含派生数据，需与原始样例一起受控；项目结束按 [数据清理说明](docs/DATA_POLICY.md) 处理。
 
-不将合成测试通过写成财务业务验收通过。正式业务仍需确认关联键、汇总关系、退款、手续费、日期及用户测试结果，见 [待财务确认清单](docs/BUSINESS_CONFIRMATION.md)。
+不将合成测试通过写成财务业务验收通过。正式业务仍需确认付款单位口径、金额与退款口径及用户测试结果，见 [待财务确认清单](docs/BUSINESS_CONFIRMATION.md)。
 
