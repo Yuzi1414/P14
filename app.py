@@ -521,6 +521,13 @@ def metric_card(icon, label, value, bg, fg):
             f'<div><div class="mval">{value}</div><div class="mlab">{label}</div></div></div>')
 
 
+def zero_match_hint(task):
+    """A whole task with no matched group almost always means a wrong column mapping."""
+    if task and task.groups and not any(g.status == "已匹配" for g in task.groups):
+        st.warning("当前任务没有任何「已匹配」结果组。请重点检查两份表的「付款单位」是否都映射到了正确的列，"
+                   "以及两份表的单位名称与金额是否真的一致；点开任一结果组可看到银行「…」与往来「…」两侧名称。")
+
+
 def eyebrow_html(cloud):
     return "RECONCILIATION WORKBENCH / " + ("CLOUD DEPLOYMENT" if cloud else "LOCAL PROTOTYPE")
 
@@ -749,6 +756,7 @@ if page == "对账总览":
         for col, (icon, label, value, (bg, fg)) in zip(metrics, cards):
             col.markdown(metric_card(icon, label, value, bg, fg), unsafe_allow_html=True)
         st.caption(f"原始记录 {len(task.records)} 条；每条银行流水与一条财务往来账组成一个结果组，记录只进入一个结果组。")
+        zero_match_hint(task)
         st.subheader("当前结果概览")
         st.dataframe(style_status(pd.DataFrame(group_rows(task)).drop(columns=["成员标识"])), hide_index=True, width="stretch")
         st.download_button("导出完整核对工作簿", workbook_bytes(task), "P14-对账结果.xlsx",
@@ -764,6 +772,8 @@ if page == "对账总览":
 
 elif page == "导入与字段确认":
     st.info("在本机选择授权的脱敏/模拟文件。先确认每份文件的工作表、表头和字段（付款单位与金额必填），再建立新任务。")
+    st.caption("两份文件要分别放进「银行流水」和「财务往来账」两个上传框；字段下拉框请核对“付款单位”是否选对，"
+               "对账只比较这一列与金额。")
     for source, label in SOURCES.items():
         with st.expander(label, expanded=True):
             uploads = st.file_uploader(f"选择{label}文件", type=["xlsx", "xls"], accept_multiple_files=True, key="upload_" + source)
@@ -829,8 +839,17 @@ elif page == "导入与字段确认":
     staged = st.session_state.staged
     st.subheader("已确认的导入清单")
     if staged:
-        st.dataframe([{**{k: v for k, v in item["meta"].items() if k not in ("映射", "文件哈希")},
-                       "记录数": len(item["records"])} for item in staged.values()], hide_index=True, width="stretch")
+        rows = []
+        for item in staged.values():
+            meta = item["meta"]
+            mapping = meta.get("映射", {})
+            rows.append({**{k: v for k, v in meta.items() if k not in ("映射", "文件哈希")},
+                         "付款单位列": mapping.get("name") or "未映射",
+                         "金额列": mapping.get("amount") or "未映射",
+                         "业务日期列": mapping.get("date") or "未映射",
+                         "记录数": len(item["records"])})
+        st.dataframe(rows, hide_index=True, width="stretch")
+        st.caption("若“付款单位列”显示的不是单位名称列，请回到上方下拉框改正后重新确认；映射用错时结果会全部落到异常差异/未匹配。")
         remove = st.multiselect("移除暂存工作表", list(staged), format_func=lambda k: staged[k]["meta"]["文件"] + " / " + staged[k]["meta"]["工作表"])
         if st.button("移除选中的暂存项", disabled=not remove):
             for k in remove:
@@ -864,6 +883,7 @@ elif page == "结果与人工复核":
         human = b.multiselect("人工复核状态", ["待复核", "已确认", "已驳回"], default=["待复核", "已确认", "已驳回"])
         shown = [g for g in task.groups if g.status in status and review_status(task, g.id) in human]
         st.caption(f"显示 {len(shown)} 个结果组 / 总计 {len(task.groups)} 个结果组")
+        zero_match_hint(task)
         # 已匹配的组通常占大多数且判断简单：给一个批量确认入口，避免逐组点几十次。
         # 只覆盖「已匹配 + 待复核」，异常差异和未匹配仍需逐组看依据。
         flash = st.session_state.pop("review_flash", "")
