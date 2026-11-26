@@ -1,0 +1,4 @@
+P14 two-party reconciliation
+rule demo-2.0
+basis payer_name + amount
+build 2026-11-26
